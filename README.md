@@ -13,6 +13,13 @@
 curl -L -o /root/remnanode_analyzer.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/remnanode_analyzer.sh && chmod +x /root/remnanode_analyzer.sh && bash /root/remnanode_analyzer.sh
 ```
 
+## Установка Докера
+
+```
+curl -L -o /root/docker_install.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/docker_install.sh && chmod +x /root/docker_install.sh && bash /root/docker_install.sh
+```
+
+
 ## remna-update-manager.sh
 
 Можно запланировать одноразовое обновление контейнеров по Московскому времени c помощью **at**
