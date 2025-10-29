@@ -58,5 +58,5 @@ curl -L -o /root/ssh.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scr
 Скрипт установит fail2ban и настроет его тюрьму на ssh, автоматически определяя источник логов - `journalctl` или `/var/log/auth.log`
 
 ```
-curl -L -o /root/inst_fail2ban_ssh.sh.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/inst_fail2ban_ssh.sh && chmod +x /root/inst_fail2ban_ssh.sh && bash /root/inst_fail2ban_ssh.sh
+curl -L -o /root/inst_fail2ban_ssh.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/inst_fail2ban_ssh.sh && chmod +x /root/inst_fail2ban_ssh.sh && bash /root/inst_fail2ban_ssh.sh
 ```
