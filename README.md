@@ -61,6 +61,8 @@ curl -L -o /root/ssh.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scr
 curl -L -o /root/inst_fail2ban_ssh.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/inst_fail2ban_ssh.sh && chmod +x /root/inst_fail2ban_ssh.sh && bash /root/inst_fail2ban_ssh.sh
 ```
 
+---
+
 ## Отключаем ICMP пинг
 
 ```
@@ -74,3 +76,7 @@ sudo sed -i '/-A ufw-before-input -p icmp --icmp-type echo-request/s/ACCEPT/DROP
 grep echo-request /etc/ufw/before.rules
 
 ```
+
+---
+
+
