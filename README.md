@@ -86,8 +86,14 @@ grep echo-request /etc/ufw/before.rules
 >
 >❌ удаляется всё содержимое Docker (контейнеры, образы, volumes, сети, build-кэш)
 >❌ удаляются docker-compose.yml / Dockerfile / .env
->❌ полностью удаляется /opt/remnawave
+>❌ полностью удаляется `/opt/remnawave` и `/opt/remnanode` если они есть
 >❌ чистятся логи, tmp, apt-мусор, старые ядра
 >✔ система и Docker готовы к «чистому старту»
 >
 >Ни переустановки Docker, ни потери бинарников не будет.
+
+*Скрипт для ситуации, когда требуется очистить VPS для последующей установки контейнеров "с нуля"*
+
+```
+curl -L -o /root/full-clean-with-docker.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/full-clean-with-docker.sh && chmod +x /root/full-clean-with-docker.sh && bash /root/full-clean-with-docker.sh
+```
