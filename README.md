@@ -97,3 +97,7 @@ grep echo-request /etc/ufw/before.rules
 ```
 curl -L -o /root/full-clean-with-docker.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/full-clean-with-docker.sh && chmod +x /root/full-clean-with-docker.sh && bash /root/full-clean-with-docker.sh
 ```
+
+После выполнения скрипта рекомандовано перезагрузить сервер!
+
+---
