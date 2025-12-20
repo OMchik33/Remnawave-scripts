@@ -85,9 +85,13 @@ grep echo-request /etc/ufw/before.rules
 >Docker Engine и docker compose plugin остаются установленными
 >
 >❌ удаляется всё содержимое Docker (контейнеры, образы, volumes, сети, build-кэш)
+
 >❌ удаляются docker-compose.yml / Dockerfile / .env
+
 >❌ полностью удаляется `/opt/remnawave` и `/opt/remnanode` если они есть
+
 >❌ чистятся логи, tmp, apt-мусор, старые ядра
+
 >✔ система и Docker готовы к «чистому старту»
 >
 >Ни переустановки Docker, ни потери бинарников не будет.
