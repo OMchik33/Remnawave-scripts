@@ -18,9 +18,11 @@ docker ps -a || true
 docker volume ls || true
 docker images || true
 
-echo "=== Удаление docker-compose / Dockerfile / .env ==="
+echo "=== Удаление рабочих каталогов Remna ==="
 rm -rf /opt/remnawave
+rm -rf /opt/remnanode
 
+echo "=== Удаление docker-compose / Dockerfile / .env ==="
 find /opt -type f \( \
   -name "docker-compose.yml" -o \
   -name "docker-compose.yaml" -o \
@@ -56,4 +58,4 @@ echo 3 > /proc/sys/vm/drop_caches
 echo "=== Итоговое свободное место ==="
 df -h /
 
-echo "===== ГОТОВО. Docker сохранён, среда очищена ====="
+echo "===== ГОТОВО. Docker сохранён, Remna-окружение очищено ====="
