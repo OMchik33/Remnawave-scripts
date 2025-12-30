@@ -24,6 +24,7 @@ curl -L -o /root/remnanode_analyzer.sh https://raw.githubusercontent.com/OMchik3
 curl -L -o /root/docker_install.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/docker_install.sh && chmod +x /root/docker_install.sh && bash /root/docker_install.sh
 ```
 
+---
 
 ## remna-update-manager.sh
 
@@ -35,6 +36,7 @@ curl -L -o /root/docker_install.sh https://raw.githubusercontent.com/OMchik33/Re
 
 ![image](https://github.com/user-attachments/assets/0c33c20f-a120-456b-bdea-d7039c30e0be)
 
+---
 
 ## Remnawave_backup.sh:
 
@@ -42,6 +44,7 @@ curl -L -o /root/docker_install.sh https://raw.githubusercontent.com/OMchik33/Re
 
 ![image](https://github.com/user-attachments/assets/8f0c7183-56ab-4337-afad-0a785f1daae7)
 
+---
 
 ## ssh.sh:
 
@@ -58,6 +61,8 @@ curl -L -o /root/docker_install.sh https://raw.githubusercontent.com/OMchik33/Re
 curl -L -o /root/ssh.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/ssh.sh && chmod +x /root/ssh.sh && bash /root/ssh.sh
 ```
 <img width="660" height="509" alt="image" src="https://github.com/user-attachments/assets/81f83fae-3d5c-4178-b5a8-490e5b685306" />
+
+---
 
 ## fail2ban на ssh
 Скрипт установит fail2ban и настроет его тюрьму на ssh, автоматически определяя источник логов - `journalctl` или `/var/log/auth.log`
