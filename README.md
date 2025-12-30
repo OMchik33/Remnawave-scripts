@@ -18,6 +18,8 @@ curl -L -o /root/remnanode_analyzer.sh https://raw.githubusercontent.com/OMchik3
 
 ## Установка Докера
 
+*Ставит Docker, если обычным способом он не ставится. Либо можно сразу этим способом ставить и все ОК*
+
 ```
 curl -L -o /root/docker_install.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/docker_install.sh && chmod +x /root/docker_install.sh && bash /root/docker_install.sh
 ```
