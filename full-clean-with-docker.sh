@@ -1,61 +1,72 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-echo "===== ПОЛНАЯ ОЧИСТКА VPS (Docker сохранён) ====="
+echo "===== БЕЗОПАСНАЯ ОЧИСТКА VPS (Docker установлен, данные очищаются) ====="
 
-echo "=== Остановка контейнеров ==="
-docker rm -f $(docker ps -aq) 2>/dev/null || true
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  echo "Ошибка: скрипт нужно запускать от root."
+  exit 1
+fi
 
-echo "=== Очистка Docker: volumes / images / networks / build cache ==="
-docker volume rm $(docker volume ls -q) 2>/dev/null || true
-docker network prune -f || true
-docker image prune -af || true
-docker builder prune -af || true
-docker system prune -af --volumes || true
+export DEBIAN_FRONTEND=noninteractive
 
-echo "=== Проверка Docker (должен быть пуст) ==="
-docker ps -a || true
-docker volume ls || true
-docker images || true
+echo "=== Проверка Docker ==="
+if command -v docker >/dev/null 2>&1; then
+  if docker info >/dev/null 2>&1; then
+    echo "=== Остановка и удаление всех контейнеров ==="
+    CONTAINERS="$(docker ps -aq || true)"
+    if [[ -n "${CONTAINERS// }" ]]; then
+      docker rm -f ${CONTAINERS}
+    else
+      echo "Контейнеров нет."
+    fi
+
+    echo "=== Полная очистка данных Docker ==="
+    docker system prune -af --volumes
+  else
+    echo "Docker установлен, но daemon недоступен. Блок Docker пропущен."
+  fi
+else
+  echo "Docker не найден. Блок Docker пропущен."
+fi
+
+echo "=== Проверка Docker после очистки ==="
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  docker ps -a || true
+  docker volume ls || true
+  docker images || true
+fi
 
 echo "=== Удаление рабочих каталогов Remna ==="
-rm -rf /opt/remnawave
-rm -rf /opt/remnanode
+for dir in /opt/remnawave /opt/remnanode; do
+  if [[ -e "$dir" ]]; then
+    rm -rf --one-file-system "$dir"
+    echo "Удалено: $dir"
+  else
+    echo "Не найдено: $dir"
+  fi
+done
 
-echo "=== Удаление docker-compose / Dockerfile / .env ==="
-find /opt -type f \( \
-  -name "docker-compose.yml" -o \
-  -name "docker-compose.yaml" -o \
-  -name "Dockerfile" -o \
-  -name ".env" \
-\) -delete
+echo "=== Очистка архивных journal-логов ==="
+if command -v journalctl >/dev/null 2>&1; then
+  journalctl --rotate || true
+  journalctl --vacuum-time=7d || true
+fi
 
-echo "=== Очистка systemd логов ==="
-journalctl --rotate || true
-journalctl --vacuum-time=1s || true
-
-echo "=== Очистка /var/log ==="
-find /var/log -type f -exec truncate -s 0 {} \;
-rm -rf /var/log/*.[0-9] /var/log/*.gz /var/log/*-????????
+echo "=== Очистка архивных файлов в /var/log ==="
+find /var/log -xdev -type f \
+  \( -name '*.gz' -o -name '*.[0-9]' -o -name '*.[0-9].gz' -o -name '*.old' \) \
+  -delete 2>/dev/null || true
 
 echo "=== Очистка временных файлов ==="
-rm -rf /tmp/*
-rm -rf /var/tmp/*
+find /tmp -mindepth 1 -xdev -exec rm -rf -- {} + 2>/dev/null || true
+find /var/tmp -mindepth 1 -xdev -exec rm -rf -- {} + 2>/dev/null || true
 
 echo "=== Очистка apt ==="
 apt-get clean
-apt-get autoclean -y
 apt-get autoremove --purge -y
-
-echo "=== Удаление старых ядер ==="
-CURRENT_KERNEL=$(uname -r | sed 's/-generic//')
-dpkg --list | awk '/linux-image-[0-9]/{print $2}' | grep -v "$CURRENT_KERNEL" | xargs -r apt-get purge -y
-
-echo "=== Очистка кешей памяти ==="
-sync
-echo 3 > /proc/sys/vm/drop_caches
 
 echo "=== Итоговое свободное место ==="
 df -h /
 
-echo "===== ГОТОВО. Docker сохранён, Remna-окружение очищено ====="
+echo "===== ГОТОВО. Docker остаётся установленным, данные Docker и Remna-окружение очищены ====="
