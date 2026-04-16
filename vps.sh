@@ -1120,15 +1120,15 @@ cleanup_node_interactive() {
 quick_start_menu() {
   clear_screen
   echo
-  echo "Быстрая первичная настройка выполнит по шагам:"
-  echo "1) Обновление пакетов"
-  echo "2) Установка рекомендуемых программ"
-  echo "3) Создание пользователя"
-  echo "4) Настройка SSH"
-  echo "5) UFW"
-  echo "6) Fail2Ban"
-  echo "7) DNS / timezone / BBR / IPv6"
-  echo "8) Docker"
+  echo "Быстрая первичная настройка выполнит:"
+  echo "- обновление пакетов"
+  echo "- установку рекомендуемых программ"
+  echo "- создание пользователя"
+  echo "- настройку SSH"
+  echo "- настройку UFW"
+  echo "- установку Fail2Ban"
+  echo "- настройки DNS, часового пояса, BBR и IPv6"
+  echo "- установку Docker"
   confirm "Продолжить?" || return 0
   run_cmd apt-get update || true
   run_cmd apt-get upgrade -y || true
