@@ -591,7 +591,7 @@ manage_users_menu() {
 
 configure_ssh_interactive() {
   clear_screen
-  local port pass_auth root_login unit sshd_test temp
+  local port pass_auth root_login current_root_login temp root_change_choice
   port="$(prompt_default 'SSH порт' "$(get_effective_ssh port 2>/dev/null || echo 22)")"
   [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { log ERR "Некорректный порт."; pause; return 1; }
 
@@ -605,15 +605,25 @@ configure_ssh_interactive() {
     *) log ERR "Неверный вариант."; pause; return 1 ;;
   esac
 
-  echo "Режим для root:"
-  echo "1) yes (root может входить по паролю и по ключу)"
-  echo "2) prohibit-password (root только по ключу)"
-  echo "3) no (root login полностью запрещён)"
-  read -r -p "> " temp
-  case "$temp" in
-    1) root_login="yes" ;;
-    2) root_login="prohibit-password" ;;
-    3) root_login="no" ;;
+  current_root_login="$(get_effective_ssh permitrootlogin 2>/dev/null || true)"
+  [[ -n "$current_root_login" ]] || current_root_login="yes"
+
+  echo
+  echo "Настройка доступа root по SSH:"
+  echo "- создание нового пользователя само по себе НЕ меняет доступ root"
+  echo "- режим root изменится только если ты явно выберешь это ниже"
+  echo "- сначала лучше проверить вход под новым пользователем в отдельной сессии"
+  echo
+  echo "1) Не менять текущий режим root (${current_root_login})"
+  echo "2) yes — root может входить по паролю и по ключу"
+  echo "3) prohibit-password — root только по ключу"
+  echo "4) no — root login полностью запрещён"
+  read -r -p "> " root_change_choice
+  case "$root_change_choice" in
+    1) root_login="$current_root_login" ;;
+    2) root_login="yes" ;;
+    3) root_login="prohibit-password" ;;
+    4) root_login="no" ;;
     *) log ERR "Неверный вариант."; pause; return 1 ;;
   esac
 
@@ -623,6 +633,15 @@ configure_ssh_interactive() {
       pause
       return 1
     fi
+  fi
+
+  if [[ "$root_login" == "no" || "$root_login" == "prohibit-password" ]]; then
+    echo
+    echo "Важно:"
+    echo "- не закрывай текущую root-сессию, пока не проверишь новый вход"
+    echo "- сначала проверь вход под новым пользователем в отдельной сессии"
+    echo "- только после этого оставляй ограничение для root"
+    confirm "Применить этот режим для root?" || { log WARN "Изменение режима root отменено пользователем. Оставляю текущий режим: ${current_root_login}."; root_login="$current_root_login"; }
   fi
 
   if (( DRY_RUN )); then
@@ -647,7 +666,7 @@ EOFSSH
 
   sshd -t >>"$LOG_FILE" 2>&1 || { log ERR "sshd -t не прошёл. Конфиг не применён."; pause; return 1; }
   restart_ssh || { pause; return 1; }
-  log OK "SSH-настройки применены. Новый порт: ${port}."
+  log OK "SSH-настройки применены. Новый порт: ${port}. Режим root: ${root_login}."
   pause
 }
 
@@ -1129,6 +1148,7 @@ quick_start_menu() {
   echo "- установку Fail2Ban"
   echo "- настройки DNS, часового пояса, BBR и IPv6"
   echo "- установку Docker"
+  echo "- root не будет ограничен автоматически: режим root по SSH спросится отдельно"
   confirm "Продолжить?" || return 0
   run_cmd apt-get update || true
   run_cmd apt-get upgrade -y || true
