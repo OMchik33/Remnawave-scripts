@@ -1,21 +1,6 @@
 # Remnawave-scripts
 
 
-## remnanode_analyzer.sh
-
-Подключается к контейнеру ноды, смотрит лог xray (последнюю 1000 записей), либо realtime.
-
-! Последнее обновление Remnawave привело к тому, что вместо email пользователя скрипт отображает ID пользователя
-
-![image](https://github.com/user-attachments/assets/44b3e7c1-a577-4ead-a1c1-c169a7f4b12a)
-
-Установка/Запуск
-
-```
-curl -L -o /root/remnanode_analyzer.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/remnanode_analyzer.sh && chmod +x /root/remnanode_analyzer.sh && bash /root/remnanode_analyzer.sh
-```
----
-
 ## Установка Докера
 
 *Ставит Docker, если обычным способом он не ставится. Либо можно сразу этим способом ставить и все ОК*
