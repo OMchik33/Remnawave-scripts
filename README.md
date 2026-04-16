@@ -1,4 +1,4 @@
-# Remnawave-scripts
+# VPS-scripts_Remnawave
 
 
 ## Установка Докера
