@@ -11,20 +11,6 @@ curl -L -o /root/docker_install.sh https://raw.githubusercontent.com/OMchik33/Re
 
 ---
 
-## remna-update-manager.sh
-
-Можно запланировать одноразовое обновление контейнеров по Московскому времени c помощью **at**
-
-Обновляются командой `cd /opt/remnawave && docker compose down && docker compose pull && docker compose up -d`
-
-Лог запуска идет в телеграм чат через бот, указанные в /opt/remnawave/.env
-
-*Актуально было когда все установлено на единственном сервере (и панель и нода) и нужно найти время чтобы обновить когда клиенты не онлайн, т.е. ночью*
-
-![image](https://github.com/user-attachments/assets/0c33c20f-a120-456b-bdea-d7039c30e0be)
-
----
-
 ## ssh.sh:
 
 Скрипт для первичной настройки SSH на сервере.
