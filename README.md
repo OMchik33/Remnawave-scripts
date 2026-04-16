@@ -66,6 +66,12 @@ grep echo-request /etc/ufw/before.rules
 
 ```
 
+Вернуть ICMP пинг обратно:
+
+```
+sudo sed -i '/-A ufw-before-input -p icmp --icmp-type echo-request/s/DROP/ACCEPT/' /etc/ufw/before.rules && sudo ufw reload && echo "ICMP echo-request снова разрешен (ping включен)."
+```
+
 ---
 
 
