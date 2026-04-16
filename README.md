@@ -91,7 +91,7 @@ sudo sed -i '/-A ufw-before-input -p icmp --icmp-type echo-request/s/DROP/ACCEPT
 >
 >Ни переустановки Docker, ни потери бинарников не будет.
 
-*Скрипт для ситуации, когда требуется очистить VPS для последующей установки контейнеров "с нуля"*
+*Скрипт для ситуации, когда требуется очистить VPS для последующей установки контейнеров "с нуля". Или для ноды с минимальным SSD, которую необходимо регулярно чистить для установки новых версий Remnanode*
 
 ```
 curl -L -o /root/full-clean-with-docker.sh https://raw.githubusercontent.com/OMchik33/Remnawave-scripts/refs/heads/main/full-clean-with-docker.sh && chmod +x /root/full-clean-with-docker.sh && bash /root/full-clean-with-docker.sh
