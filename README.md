@@ -76,7 +76,7 @@ sudo sed -i '/-A ufw-before-input -p icmp --icmp-type echo-request/s/DROP/ACCEPT
 
 ---
 
-## BBR + Ipv6
+## BBR + IPv6
 
 ```
 sudo nano /etc/sysctl.conf
