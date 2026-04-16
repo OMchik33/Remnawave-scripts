@@ -76,6 +76,63 @@ sudo sed -i '/-A ufw-before-input -p icmp --icmp-type echo-request/s/DROP/ACCEPT
 
 ---
 
+## BBR + Ipv6
+
+```
+sudo nano /etc/sysctl.conf
+
+```
+
+### Включаем BBR
+
+```
+# TCP congestion control: BBRv2
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+
+```
+
+### Отключаем Ipv6
+
+```
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+
+```
+
+Применить изменения:
+
+```
+
+sudo sysctl -p
+
+
+```
+
+
+---
+
+
+## Настройка DNS
+
+```
+sudo nano /etc/systemd/resolved.conf
+```
+
+```
+[Resolve]
+DNS=9.9.9.9 8.8.8.8 94.140.14.14
+FallbackDNS=1.1.1.2 8.8.4.4
+```
+
+```
+sudo systemctl restart systemd-resolved
+resolvectl status
+```
+
+---
+
 
 ## Полная очистка ноды
 
