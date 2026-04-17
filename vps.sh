@@ -248,6 +248,20 @@ get_effective_ssh() {
   sshd -T 2>/dev/null | awk -v k="$1" 'tolower($1)==tolower(k){print $2; exit}'
 }
 
+format_root_login_mode() {
+  local mode="$1"
+  case "$mode" in
+    yes) printf '%s
+' 'key+pass' ;;
+    prohibit-password|without-password) printf '%s
+' 'key' ;;
+    no) printf '%s
+' 'block' ;;
+    *) printf '%s
+' "$mode" ;;
+  esac
+}
+
 ssh_control_unit() {
   local list
   list="$(systemctl list-unit-files --no-legend 2>/dev/null | awk '{print $1}')"
@@ -931,11 +945,12 @@ manage_users_menu() {
 
 configure_ssh_interactive() {
   clear_screen
-  local current_port old_ufw_ssh_port port pass_auth_choice pass_auth current_root_login root_choice root_login admin_user pubkey
+  local current_port old_ufw_ssh_port port pass_auth_choice pass_auth current_root_login current_root_login_display root_choice root_login admin_user pubkey
   current_port="$(get_display_ssh_port)"
   old_ufw_ssh_port="$(get_ssh_firewall_port)"
   current_root_login="$(get_effective_ssh permitrootlogin 2>/dev/null || true)"
   [[ -n "$current_root_login" ]] || current_root_login="yes"
+  current_root_login_display="$(format_root_login_mode "$current_root_login")"
 
   echo "===== SSH и доступ ====="
   echo "Этот раздел меняет порт SSH, вход по паролю и режим root."
@@ -961,7 +976,7 @@ configure_ssh_interactive() {
 
   echo
   echo "Настройка доступа root по SSH:"
-  echo "- Текущий режим: ${current_root_login}"
+  echo "- Сейчас выбрано: ${current_root_login_display}"
   echo "0) Назад"
   echo "1) Не менять текущий режим root"
   echo "2) key+pass — root может входить по ключу и по паролю"
@@ -1307,19 +1322,23 @@ rollback_dns() {
 }
 
 offset_to_timezone() {
-  local off="$1" sign hours mins
+  local off="$1" sign hours mins display_hours
   off="${off// /}"
   if [[ "$off" =~ ^([+-])([0-9]{1,2})(:([0-9]{2}))?$ ]]; then
     sign="${BASH_REMATCH[1]}"
     hours="${BASH_REMATCH[2]}"
     mins="${BASH_REMATCH[4]:-00}"
+
     (( 10#$hours <= 14 )) || return 1
     [[ "$mins" == "00" ]] || return 1
-    # В Etc/GMT знак обратный
+
+    display_hours="$((10#$hours))"
+
+    # Для Etc/GMT знак в имени зоны обратный
     if [[ "$sign" == "+" ]]; then
-      echo "Etc/GMT-${hours#0}"
+      printf 'Etc/GMT-%s\n' "$display_hours"
     else
-      echo "Etc/GMT+${hours#0}"
+      printf 'Etc/GMT+%s\n' "$display_hours"
     fi
     return 0
   fi
@@ -1328,8 +1347,9 @@ offset_to_timezone() {
 
 configure_timezone_interactive() {
   clear_screen
-  local current tz choice offset
+  local current tz choice offset display_tz
   current="$(timedatectl show --property=Timezone --value 2>/dev/null || echo 'неизвестно')"
+
   echo "Текущий часовой пояс: $current"
   echo "Выбери вариант:"
   echo "0) Назад"
@@ -1340,20 +1360,43 @@ configure_timezone_interactive() {
   echo "5) Ввести имя зоны вручную"
   read -r -p "> " choice </dev/tty
   [[ "$choice" == "0" ]] && return 0
+
   case "$choice" in
-    1) tz="Europe/Berlin" ;;
-    2) tz="Europe/Moscow" ;;
-    3) tz="UTC" ;;
+    1)
+      tz="Europe/Berlin"
+      display_tz="$tz"
+      ;;
+    2)
+      tz="Europe/Moscow"
+      display_tz="$tz"
+      ;;
+    3)
+      tz="UTC"
+      display_tz="$tz"
+      ;;
     4)
       offset="$(prompt_nonempty 'Введи смещение UTC (например +3 или +03:00): ')"
       tz="$(offset_to_timezone "$offset")" || { log ERR "Поддерживаются только целые часы, например +3 или -5."; pause; return 1; }
+      display_tz="UTC${offset}"
       ;;
-    5) tz="$(prompt_nonempty 'Введи имя зоны (например Europe/Berlin): ')" ;;
-    *) log ERR "Неверный вариант."; pause; return 1 ;;
+    5)
+      tz="$(prompt_nonempty 'Введи имя зоны (например Europe/Berlin): ')"
+      display_tz="$tz"
+      ;;
+    *)
+      log ERR "Неверный вариант."
+      pause
+      return 1
+      ;;
   esac
-  timedatectl list-timezones 2>/dev/null | grep -Fxq "$tz" || { log ERR "Timezone '$tz' не найден."; pause; return 1; }
-  run_cmd timedatectl set-timezone "$tz" || return 1
-  log OK "Часовой пояс установлен: $tz"
+
+  run_cmd timedatectl set-timezone "$tz" || {
+    log ERR "Не удалось установить часовой пояс: $display_tz"
+    pause
+    return 1
+  }
+
+  log OK "Часовой пояс установлен: $display_tz"
   pause
 }
 
