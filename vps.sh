@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Light VPS — первичная настройка Ubuntu/Debian VPS
+# VPS Bootstrap — первичная настройка Ubuntu/Debian VPS
 set -uo pipefail
 
 # Принудительно устанавливаем английскую локаль для корректного парсинга вывода команд (apt, grep, awk)
@@ -297,6 +297,45 @@ get_ssh_firewall_port() {
   printf '%s\n' "$port"
 }
 
+get_current_dns_servers() {
+  local dns=""
+  if command -v resolvectl >/dev/null 2>&1; then
+    dns="$(resolvectl dns 2>/dev/null | awk '
+      /^Global:/ {
+        for (i = 2; i <= NF; i++) {
+          if ($i ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ || $i ~ /:/) {
+            print $i
+          }
+        }
+        exit
+      }
+    ' | paste -sd' ' -)"
+  fi
+  if [[ -z "$dns" ]]; then
+    dns="$(awk '/^nameserver[[:space:]]+/ {print $2}' /etc/resolv.conf 2>/dev/null | paste -sd' ' -)"
+  fi
+  [[ -n "$dns" ]] || dns="неизвестно"
+  printf '%s\n' "$dns"
+}
+
+get_current_fallback_dns_servers() {
+  local dns=""
+  if command -v resolvectl >/dev/null 2>&1; then
+    dns="$(resolvectl fallback-dns 2>/dev/null | awk '
+      /^Global:/ {
+        for (i = 2; i <= NF; i++) {
+          if ($i ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ || $i ~ /:/) {
+            print $i
+          }
+        }
+        exit
+      }
+    ' | paste -sd' ' -)"
+  fi
+  [[ -n "$dns" ]] || dns="не задан"
+  printf '%s\n' "$dns"
+}
+
 apply_ssh_port_via_socket() {
   local port="$1"
   if (( DRY_RUN )); then
@@ -427,7 +466,7 @@ get_public_ip() {
 
 show_system_info() {
   clear_screen
-  local kernel host tz uptime_txt ip4 pub4 ssh_port ssh_pass ssh_root ufw_state f2b_state docker_state resolv_link
+  local kernel host tz uptime_txt ip4 pub4 ssh_port ssh_pass ssh_root ufw_state f2b_state docker_state resolv_link current_dns fallback_dns
   kernel="$(uname -r)"
   host="$(hostname)"
   tz="$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo 'неизвестно')"
@@ -445,6 +484,8 @@ show_system_info() {
   fi
   docker_state="$(systemctl is-active docker 2>/dev/null || echo 'not-installed/inactive')"
   resolv_link="$(readlink -f /etc/resolv.conf 2>/dev/null || echo '')"
+  current_dns="$(get_current_dns_servers)"
+  fallback_dns="$(get_current_fallback_dns_servers)"
 
   echo
   echo "========== Информация о системе =========="
@@ -462,6 +503,8 @@ show_system_info() {
   echo "UFW:               $ufw_state"
   echo "Fail2Ban:          $f2b_state"
   echo "Docker:            $docker_state"
+  echo "DNS:               ${current_dns:-неизвестно}"
+  echo "Fallback DNS:      ${fallback_dns:-не задан}"
   echo "resolv.conf →      ${resolv_link:-?}"
   echo "Лог запуска:       $LOG_FILE"
   echo "=========================================="
@@ -858,8 +901,9 @@ manage_users_menu() {
 
 configure_ssh_interactive() {
   clear_screen
-  local current_port port pass_auth_choice pass_auth current_root_login root_choice root_login admin_user pubkey
+  local current_port old_ufw_ssh_port port pass_auth_choice pass_auth current_root_login root_choice root_login admin_user pubkey
   current_port="$(get_display_ssh_port)"
+  old_ufw_ssh_port="$(get_ssh_firewall_port)"
   current_root_login="$(get_effective_ssh permitrootlogin 2>/dev/null || true)"
   [[ -n "$current_root_login" ]] || current_root_login="yes"
 
@@ -1007,6 +1051,10 @@ EOF2
 
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
     run_cmd ufw allow "$(get_ssh_firewall_port)/tcp" || true
+    if [[ "$old_ufw_ssh_port" =~ ^[0-9]+$ && "$old_ufw_ssh_port" != "$(get_ssh_firewall_port)" ]]; then
+      run_cmd ufw delete allow "${old_ufw_ssh_port}/tcp" || true
+      run_cmd ufw delete limit "${old_ufw_ssh_port}/tcp" || true
+    fi
   fi
 
   log OK "SSH-настройки применены. Порт: ${port}. Режим root: ${root_login}."
