@@ -7,6 +7,8 @@
 
 **LightVPS** — это простой Bash-скрипт для первичной настройки нового сервера.
 
+**Работает на:** Ubuntu 24-25-26 и Debian 12
+
 <img width="302" height="317" alt="изображение" src="https://github.com/user-attachments/assets/7b5729ed-758e-49dc-b7f5-6f1c9ae21531" />
 
 
