@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VPS Bootstrap — первичная настройка Ubuntu/Debian VPS
+# Light VPS — первичная настройка Ubuntu/Debian VPS
 set -uo pipefail
 
 # Принудительно устанавливаем английскую локаль для корректного парсинга вывода команд (apt, grep, awk)
