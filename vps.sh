@@ -14,7 +14,7 @@ MANAGED_BBR_FILE="/etc/sysctl.d/90-${APP_SLUG}-bbr.conf"
 MANAGED_IPV6_FILE="/etc/sysctl.d/90-${APP_SLUG}-ipv6.conf"
 MANAGED_MODULES_FILE="/etc/modules-load.d/${APP_SLUG}.conf"
 MANAGED_UNATTENDED_FILE="/etc/apt/apt.conf.d/51-${APP_SLUG}-unattended"
-MANAGED_AUTO_FILE="/etc/apt/apt.conf.d/52-${APP_SLUG}-auto-upgrades"
+MANAGED_AUTO_FILE="/etc/apt/apt.conf.d/20auto-upgrades"
 
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="${LOG_DIR}/${RUN_ID}.log"
@@ -74,7 +74,7 @@ ensure_root() {
 
 ensure_tty() {
   if [[ ! -t 0 ]]; then
-    if : </dev/tty 2>/dev/null; then
+    if [[ -r /dev/tty ]]; then
       exec </dev/tty
     else
       NON_INTERACTIVE=1
@@ -94,7 +94,7 @@ load_os_release() {
   fi
 }
 
-os_id() { echo "$OS_ID"; }
+os_id()      { echo "$OS_ID"; }
 os_version() { echo "$OS_VERSION_ID"; }
 os_codename() {
   if [[ -n "$OS_VERSION_CODENAME" ]]; then
@@ -251,18 +251,11 @@ restart_ssh() {
     log OK "[dry-run] SSH был бы перезапущен."
     return 0
   fi
-  if ssh_is_socket_activated; then
-    if systemctl is-active --quiet ssh.socket; then
-      log OK "SSH socket успешно перезапущен."
-      return 0
-    fi
-  else
-    if systemctl is-active --quiet ssh.service || systemctl is-active --quiet sshd.service; then
-      log OK "SSH успешно перезапущен."
-      return 0
-    fi
+  if systemctl is-active --quiet ssh.service || systemctl is-active --quiet sshd.service; then
+    log OK "SSH успешно перезапущен."
+    return 0
   fi
-  log ERR "SSH не активен после перезапуска."
+  log ERR "SSH-демон не активен после перезапуска."
   return 1
 }
 
@@ -273,17 +266,21 @@ apply_ssh_port_via_socket() {
     return 0
   fi
   install -d -m 0755 "$MANAGED_SSH_SOCKET_DIR"
-  cat >"$MANAGED_SSH_SOCKET_FILE" <<EOF_SOCKET
+  cat >"$MANAGED_SSH_SOCKET_FILE" <<EOF
 # Управляется ${APP_NAME}
 [Socket]
 ListenStream=
 ListenStream=${port}
-EOF_SOCKET
+EOF
   chmod 0644 "$MANAGED_SSH_SOCKET_FILE"
 }
 
+root_has_key() {
+  [[ -s /root/.ssh/authorized_keys ]]
+}
+
 has_any_admin_key() {
-  if [[ -s /root/.ssh/authorized_keys ]]; then
+  if root_has_key; then
     return 0
   fi
   local user home shell
@@ -312,7 +309,7 @@ add_public_key_to_user() {
   auth_file="$ssh_dir/authorized_keys"
   if (( DRY_RUN )); then
     log INFO "[dry-run] добавить ключ пользователю $username"
-    track_key_for_user "$username" "$pubkey"
+    append_unique_line "$STATE_DIR/keys/${username}.list" "$pubkey"
     return 0
   fi
   install -d -m 0700 -o "${owner%%:*}" -g "${owner##*:}" "$ssh_dir" 2>/dev/null || mkdir -p "$ssh_dir"
@@ -336,7 +333,7 @@ show_windows_key_help() {
   Публичный ключ:  C:\Users\ИМЯ\.ssh\id_ed25519.pub
   Приватный ключ:  C:\Users\ИМЯ\.ssh\id_ed25519
 
-На сервер вставляется только содержимое файла .pub (одной строкой).
+На сервер вставляется только содержимое файла .pub, одной строкой.
 TXT
   pause
 }
@@ -352,8 +349,7 @@ get_public_ip() {
   for ep in "${endpoints[@]}"; do
     ip="$(curl -fsS --max-time 4 "$ep" 2>/dev/null | tr -d '\r\n ' || true)"
     if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-      echo "$ip"
-      return 0
+      echo "$ip"; return 0
     fi
   done
   echo "не удалось определить"
@@ -361,7 +357,7 @@ get_public_ip() {
 
 show_system_info() {
   clear_screen
-  local kernel host tz uptime_txt ip4 pub4 ssh_port ssh_pass ssh_root ssh_mode
+  local kernel host tz uptime_txt ip4 pub4 ssh_port ssh_pass ssh_root
   local ufw_state f2b_state docker_state resolv_link
   kernel="$(uname -r)"
   host="$(hostname)"
@@ -376,7 +372,6 @@ show_system_info() {
   f2b_state="$(systemctl is-active fail2ban 2>/dev/null || echo 'not-installed/inactive')"
   docker_state="$(systemctl is-active docker 2>/dev/null || echo 'not-installed/inactive')"
   resolv_link="$(readlink -f /etc/resolv.conf 2>/dev/null || echo '')"
-  ssh_mode="$(ssh_is_socket_activated && echo 'socket (ssh.socket)' || echo 'service')"
 
   echo
   echo "========== Информация о системе =========="
@@ -390,7 +385,7 @@ show_system_info() {
   echo "SSH порт:          ${ssh_port:-неизвестно}"
   echo "SSH пароль:        ${ssh_pass:-неизвестно}"
   echo "Root login:        ${ssh_root:-неизвестно}"
-  echo "SSH активация:     $ssh_mode"
+  echo "SSH активация:     $(ssh_is_socket_activated && echo 'socket (ssh.socket)' || echo 'service')"
   echo "UFW:               $ufw_state"
   echo "Fail2Ban:          $f2b_state"
   echo "Docker:            $docker_state"
@@ -407,14 +402,14 @@ show_system_info() {
 self_test() {
   local errors=0 f
   local funcs=(
-    track_key_for_user list_regular_users print_regular_users
+    root_has_key has_any_admin_key track_key_for_user list_regular_users print_regular_users
     create_user_interactive delete_user_interactive add_key_interactive
     set_password_interactive change_sudo_mode_interactive
     configure_ssh_interactive configure_dns_interactive
     configure_bbr_interactive configure_ipv6_interactive
     install_docker_interactive configure_unattended_interactive
     show_system_info rollback_menu cleanup_node_interactive
-    is_valid_pubkey has_any_admin_key apply_ssh_port_via_socket
+    is_valid_pubkey apply_ssh_port_via_socket
   )
   for f in "${funcs[@]}"; do
     declare -F "$f" >/dev/null || { echo "Отсутствует функция: $f"; ((errors++)); }
@@ -473,8 +468,9 @@ updates_menu() {
         if [[ "$(os_id)" != "ubuntu" ]]; then
           log WARN "Release upgrade доступен только для Ubuntu."
         else
-          echo "Внимание: переход на новый релиз — это отдельная и потенциально рискованная операция."
-          echo "Для серверов чаще предпочтительнее LTS-релизы."
+          echo "Внимание:"
+          echo "- переход на новый релиз — отдельная и потенциально рискованная операция"
+          echo "- для серверов чаще предпочтительнее LTS-релизы"
           if confirm "Продолжить к do-release-upgrade?"; then
             run_cmd apt-get update && DEBIAN_FRONTEND=noninteractive run_cmd apt-get full-upgrade -y
             run_cmd do-release-upgrade
@@ -501,8 +497,8 @@ create_user_interactive() {
 
   echo "Режим sudo:"
   echo "1) Без sudo"
-  echo "2) Обычный sudo (понадобится пароль пользователя)"
-  echo "3) Sudo без пароля (NOPASSWD)"
+  echo "2) Обычный sudo, понадобится пароль пользователя"
+  echo "3) Sudo без пароля, NOPASSWD"
   read -r -p "> " sudo_mode </dev/tty
 
   echo "Как добавить SSH-ключ?"
@@ -595,7 +591,7 @@ delete_user_interactive() {
     return 1
   fi
   echo "1) Удалить пользователя без домашней директории"
-  echo "2) Удалить пользователя вместе с домашней директорией (-r)"
+  echo "2) Удалить пользователя вместе с домашней директорией"
   read -r -p "> " mode </dev/tty
 
   if (( ! DRY_RUN )); then
@@ -616,7 +612,7 @@ delete_user_interactive() {
 add_key_interactive() {
   clear_screen
   local username mode pubkey src
-  username="$(prompt_nonempty 'Кому добавить ключ (имя пользователя или root): ')"
+  username="$(prompt_nonempty 'Кому добавить ключ, имя пользователя или root: ')"
   getent passwd "$username" >/dev/null 2>&1 || { log ERR "Пользователь не найден."; pause; return 1; }
   echo "1) Вставить новый публичный ключ"
   echo "2) Скопировать все ключи root"
@@ -644,7 +640,7 @@ add_key_interactive() {
 set_password_interactive() {
   clear_screen
   local username pass1 pass2
-  username="$(prompt_nonempty 'Введите имя пользователя (или root): ')"
+  username="$(prompt_nonempty 'Введите имя пользователя, или root: ')"
   getent passwd "$username" >/dev/null 2>&1 || { log ERR "Пользователь не найден."; pause; return 1; }
   read -r -s -p "Новый пароль: " pass1 </dev/tty; echo
   read -r -s -p "Повтори пароль: " pass2 </dev/tty; echo
@@ -667,7 +663,7 @@ change_sudo_mode_interactive() {
   sudoers="/etc/sudoers.d/90-${APP_SLUG}-${username}"
   echo "1) Без sudo"
   echo "2) Обычный sudo"
-  echo "3) Sudo без пароля (NOPASSWD)"
+  echo "3) Sudo без пароля, NOPASSWD"
   read -r -p "> " mode </dev/tty
   case "$mode" in
     1)
@@ -701,7 +697,7 @@ manage_users_menu() {
     echo "===== Пользователи и SSH-ключи ====="
     echo "1) Создать нового пользователя"
     echo "2) Удалить пользователя"
-    echo "3) Добавить SSH-ключ пользователю/root"
+    echo "3) Добавить SSH-ключ пользователю или root"
     echo "4) Задать или сменить пароль"
     echo "5) Изменить режим sudo"
     echo "6) Краткая инструкция по ключу для Windows"
@@ -762,11 +758,24 @@ configure_ssh_interactive() {
     fi
   fi
 
+  if [[ "$root_login" == "prohibit-password" && "$current_root_login" != "prohibit-password" ]]; then
+    if ! root_has_key; then
+      log ERR "У root нет SSH-ключа в /root/.ssh/authorized_keys. Нельзя перевести root в режим 'только по ключу'."
+      echo "Сначала:"
+      echo "- добавь ключ root вручную"
+      echo "- или скопируй ключ root через раздел 'Пользователи и SSH-ключи'"
+      echo "- или оставь текущий режим root без изменений"
+      pause
+      return 1
+    fi
+  fi
+
   if [[ "$root_login" == "no" || "$root_login" == "prohibit-password" ]]; then
     echo
     echo "Важно:"
     echo "- не закрывай текущую root-сессию, пока не проверишь новый вход"
     echo "- сначала проверь вход под новым пользователем в отдельной сессии"
+    echo "- если выбираешь режим root 'только по ключу', у root уже должен быть рабочий ключ"
     confirm "Применить этот режим для root?" || {
       log WARN "Изменение режима root отменено пользователем. Оставляю текущий режим: ${current_root_login}."
       root_login="$current_root_login"
@@ -788,18 +797,18 @@ configure_ssh_interactive() {
 
   if ssh_is_socket_activated; then
     apply_ssh_port_via_socket "$port"
-    cat >"$MANAGED_SSH_FILE" <<EOF_SSH
+    cat >"$MANAGED_SSH_FILE" <<EOFSSH
 # Управляется ${APP_NAME}
-# Порт при socket-активации задаётся в ${MANAGED_SSH_SOCKET_FILE}
+# Порт на системах с socket-активацией задаётся в ${MANAGED_SSH_SOCKET_FILE}
 PubkeyAuthentication yes
 PasswordAuthentication ${pass_auth}
 KbdInteractiveAuthentication no
 PermitEmptyPasswords no
 PermitRootLogin ${root_login}
 UsePAM yes
-EOF_SSH
+EOFSSH
   else
-    cat >"$MANAGED_SSH_FILE" <<EOF_SSH
+    cat >"$MANAGED_SSH_FILE" <<EOFSSH
 # Управляется ${APP_NAME}
 Port ${port}
 PubkeyAuthentication yes
@@ -808,7 +817,7 @@ KbdInteractiveAuthentication no
 PermitEmptyPasswords no
 PermitRootLogin ${root_login}
 UsePAM yes
-EOF_SSH
+EOFSSH
   fi
   chmod 0644 "$MANAGED_SSH_FILE"
 
@@ -817,7 +826,6 @@ EOF_SSH
 
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
     run_cmd ufw allow "${port}/tcp" || true
-    log WARN "Если ранее был открыт старый SSH-порт, удаляй его из UFW вручную только после проверки нового входа."
   fi
 
   log OK "SSH-настройки применены. Порт: ${port}. Режим root: ${root_login}."
@@ -867,10 +875,9 @@ toggle_icmp() {
   fi
   case "$mode" in
     drop)   sed -i -E 's|(-A ufw-before-input -p icmp --icmp-type echo-request -j )ACCEPT|\1DROP|' "$file" ;;
-    accept) sed -i -E 's|(-A ufw-before-input -p icmp --icmp-type echo-request -j )DROP|\1ACCEPT|' "$file" ;;
+    accept) sed -i -E 's|(-A ufw-before-input -p icmp --icmp-type echo-request -j )DROP|\1ACCEPT|'   "$file" ;;
     *) return 1 ;;
   esac
-  grep -q "icmp-type echo-request -j ${mode^^}" "$file" || log WARN "ICMP-правило не изменилось так, как ожидалось."
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
     ufw reload >>"$LOG_FILE" 2>&1 || true
   fi
@@ -908,7 +915,7 @@ install_fail2ban_interactive() {
   fi
   run_cmd systemctl enable fail2ban || return 1
   run_cmd systemctl restart fail2ban || return 1
-  log OK "Fail2Ban настроен для SSH (backend=${backend})."
+  log OK "Fail2Ban настроен для SSH, backend=${backend}."
 }
 
 remove_fail2ban_interactive() {
@@ -925,11 +932,11 @@ firewall_menu() {
     clear_screen
     echo
     echo "===== Фаервол и защита ====="
-    echo "1) Установить / включить UFW и разрешить текущий SSH-порт"
+    echo "1) Установить или включить UFW и разрешить текущий SSH-порт"
     echo "2) Включить ufw limit для SSH"
     echo "3) Отключить ответы на ICMP ping"
     echo "4) Включить ответы на ICMP ping"
-    echo "5) Установить / настроить Fail2Ban для SSH"
+    echo "5) Установить или настроить Fail2Ban для SSH"
     echo "6) Удалить Fail2Ban"
     echo "7) Отключить UFW"
     echo "0) Назад"
@@ -961,7 +968,7 @@ configure_dns_interactive() {
   fi
 
   dns="$(prompt_nonempty 'Основные DNS через пробел: ')"
-  read -r -p "Fallback DNS через пробел (можно пусто): " fallback </dev/tty
+  read -r -p "Fallback DNS через пробел, можно пусто: " fallback </dev/tty
   if (( DRY_RUN )); then
     log INFO "[dry-run] write $MANAGED_DNS_FILE"
   else
@@ -1001,7 +1008,7 @@ configure_timezone_interactive() {
     1) tz="Europe/Berlin" ;;
     2) tz="Europe/Moscow" ;;
     3) tz="UTC" ;;
-    4) tz="$(prompt_nonempty 'Введи timezone (например Europe/Berlin): ')" ;;
+    4) tz="$(prompt_nonempty 'Введи timezone, например Europe/Berlin: ')" ;;
     *) log ERR "Неверный вариант."; pause; return 1 ;;
   esac
   timedatectl list-timezones 2>/dev/null | grep -Fxq "$tz" || { log ERR "Timezone '$tz' не найден."; pause; return 1; }
@@ -1032,11 +1039,11 @@ configure_bbr_interactive() {
   fi
   printf 'tcp_bbr\n' >"$MANAGED_MODULES_FILE"
   chmod 0644 "$MANAGED_MODULES_FILE"
-  cat >"$MANAGED_BBR_FILE" <<EOF_BBR
+  cat >"$MANAGED_BBR_FILE" <<EOFBBR
 # Управляется ${APP_NAME}
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
-EOF_BBR
+EOFBBR
   chmod 0644 "$MANAGED_BBR_FILE"
   sysctl --system >>"$LOG_FILE" 2>&1 || { log ERR "Не удалось применить sysctl."; pause; return 1; }
   log OK "BBR включён."
@@ -1063,12 +1070,12 @@ configure_ipv6_interactive() {
       if (( DRY_RUN )); then
         log INFO "[dry-run] write $MANAGED_IPV6_FILE"
       else
-        cat >"$MANAGED_IPV6_FILE" <<EOF_IPV6
+        cat >"$MANAGED_IPV6_FILE" <<EOFIPV6
 # Управляется ${APP_NAME}
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
-EOF_IPV6
+EOFIPV6
         chmod 0644 "$MANAGED_IPV6_FILE"
         sysctl --system >>"$LOG_FILE" 2>&1 || { log ERR "Не удалось отключить IPv6."; pause; return 1; }
       fi
@@ -1098,7 +1105,7 @@ network_menu() {
     echo "1) Настроить DNS через systemd-resolved"
     echo "2) Настроить timezone"
     echo "3) Включить BBR"
-    echo "4) Включить/выключить IPv6"
+    echo "4) Включить или выключить IPv6"
     echo "0) Назад"
     read -r -p "> " choice </dev/tty
     case "$choice" in
@@ -1120,7 +1127,7 @@ install_docker_interactive() {
   arch="$(dpkg --print-architecture)"
   case "$id" in
     ubuntu|debian) ;;
-    *) log ERR "Docker-установка поддерживается только для Ubuntu/Debian."; pause; return 1 ;;
+    *) log ERR "Docker поддерживается только для Ubuntu и Debian."; pause; return 1 ;;
   esac
   [[ -n "$codename" ]] || { log ERR "Не удалось определить codename."; pause; return 1; }
 
@@ -1148,7 +1155,9 @@ install_docker_interactive() {
   DEBIAN_FRONTEND=noninteractive run_cmd apt-get install -y \
     docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
   run_cmd systemctl enable --now docker || true
-  log WARN "Docker может публиковать порты в обход ожидаемого поведения UFW. Проверь правила после установки."
+  echo "Важно:"
+  echo "- опубликованные порты Docker могут обходить правила UFW"
+  echo "- это особенность Docker и iptables"
   log OK "Docker установлен. Используй 'docker compose'."
   pause
 }
@@ -1183,8 +1192,7 @@ docker_menu() {
 
 configure_unattended_interactive() {
   clear_screen
-  local choice distro_codename
-  distro_codename="$(os_codename)"
+  local choice
   echo "1) Включить только security updates"
   echo "2) Включить security updates и обычные updates"
   echo "3) Отключить автоматические обновления"
@@ -1196,37 +1204,37 @@ configure_unattended_interactive() {
       if (( DRY_RUN )); then
         log INFO "[dry-run] write $MANAGED_AUTO_FILE and $MANAGED_UNATTENDED_FILE"
       else
-        cat >"$MANAGED_AUTO_FILE" <<'EOF_AUTO'
+        cat >"$MANAGED_AUTO_FILE" <<'EOFAUTO'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";
-EOF_AUTO
+EOFAUTO
         chmod 0644 "$MANAGED_AUTO_FILE"
 
         if [[ "$choice" == "1" ]]; then
-          cat >"$MANAGED_UNATTENDED_FILE" <<EOF_UU
+          cat >"$MANAGED_UNATTENDED_FILE" <<EOFUU
 // Управляется ${APP_NAME}
 // Только security-обновления
 Unattended-Upgrade::Origins-Pattern {
-    "origin=Debian,codename=${distro_codename},label=Debian-Security";
-    "origin=Ubuntu,codename=${distro_codename}-security,label=Ubuntu";
+    "origin=Debian,codename=\${distro_codename},label=Debian-Security";
+    "origin=Ubuntu,codename=\${distro_codename}-security,label=Ubuntu";
 };
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
-EOF_UU
+EOFUU
         else
-          cat >"$MANAGED_UNATTENDED_FILE" <<EOF_UU
+          cat >"$MANAGED_UNATTENDED_FILE" <<EOFUU
 // Управляется ${APP_NAME}
 // Security + regular updates
 Unattended-Upgrade::Origins-Pattern {
-    "origin=Debian,codename=${distro_codename},label=Debian-Security";
-    "origin=Debian,codename=${distro_codename}-updates";
-    "origin=Ubuntu,codename=${distro_codename}-security,label=Ubuntu";
-    "origin=Ubuntu,codename=${distro_codename}-updates,label=Ubuntu";
+    "origin=Debian,codename=\${distro_codename},label=Debian-Security";
+    "origin=Debian,codename=\${distro_codename}-updates";
+    "origin=Ubuntu,codename=\${distro_codename}-security,label=Ubuntu";
+    "origin=Ubuntu,codename=\${distro_codename}-updates,label=Ubuntu";
 };
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
-EOF_UU
+EOFUU
         fi
         chmod 0644 "$MANAGED_UNATTENDED_FILE"
       fi
@@ -1236,7 +1244,12 @@ EOF_UU
       if (( DRY_RUN )); then
         log INFO "[dry-run] disable unattended-upgrades"
       else
-        rm -f "$MANAGED_UNATTENDED_FILE" "$MANAGED_AUTO_FILE"
+        cat >"$MANAGED_AUTO_FILE" <<'EOFAUTO'
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Unattended-Upgrade "0";
+EOFAUTO
+        chmod 0644 "$MANAGED_AUTO_FILE"
+        rm -f "$MANAGED_UNATTENDED_FILE"
       fi
       log OK "Автоматические обновления отключены."
       ;;
@@ -1278,8 +1291,8 @@ rollback_menu() {
         pause
         ;;
       8)
-        if (( DRY_RUN )); then log INFO "[dry-run] rm $MANAGED_UNATTENDED_FILE $MANAGED_AUTO_FILE"; else rm -f "$MANAGED_UNATTENDED_FILE" "$MANAGED_AUTO_FILE"; fi
-        log OK "Drop-in автообновлений удалён."
+        if (( DRY_RUN )); then log INFO "[dry-run] rm $MANAGED_UNATTENDED_FILE"; else rm -f "$MANAGED_UNATTENDED_FILE"; fi
+        log OK "unattended-upgrades drop-in удалён."
         pause
         ;;
       9)
@@ -1287,7 +1300,7 @@ rollback_menu() {
         rollback_dns || true
         rollback_bbr || true
         if (( ! DRY_RUN )); then
-          rm -f "$MANAGED_IPV6_FILE" "$MANAGED_UNATTENDED_FILE" "$MANAGED_AUTO_FILE"
+          rm -f "$MANAGED_IPV6_FILE" "$MANAGED_UNATTENDED_FILE"
           sysctl --system >>"$LOG_FILE" 2>&1 || true
         fi
         run_cmd ufw disable || true
@@ -1302,9 +1315,11 @@ rollback_menu() {
 
 cleanup_node_interactive() {
   clear_screen
-  echo "ВНИМАНИЕ: этот раздел удаляет все Docker-контейнеры, volumes, образы,"
-  echo "временные файлы и каталоги /opt/remnawave /opt/remnanode."
-  echo "Операция разрушительная и не подлежит откату."
+  echo "ВНИМАНИЕ:"
+  echo "- этот раздел удаляет все Docker-контейнеры, volumes, образы"
+  echo "- удаляются каталоги /opt/remnawave и /opt/remnanode"
+  echo "- чистятся старые логи и часть временных файлов"
+  echo "- операция разрушительная и не подлежит откату"
   confirm "Продолжить?" || return 0
   confirm "Точно продолжить?" || return 0
 
@@ -1335,7 +1350,7 @@ cleanup_node_interactive() {
   done
 
   if (( DRY_RUN )); then
-    log INFO "[dry-run] rotate journal, clean old logs, clean /tmp безопасно"
+    log INFO "[dry-run] rotate journal, clean old logs, clean /tmp safely"
   else
     if command -v journalctl >/dev/null 2>&1; then
       journalctl --rotate >>"$LOG_FILE" 2>&1 || true
@@ -1377,13 +1392,13 @@ quick_start_menu() {
   confirm "Обновить систему сейчас?"                    && { run_cmd apt-get update || true; DEBIAN_FRONTEND=noninteractive run_cmd apt-get upgrade -y || true; }
   confirm "Установить рекомендуемые пакеты?"            && install_or_update_recommended "" || true
   confirm "Создать нового пользователя?"                && create_user_interactive || true
-  confirm "Настроить SSH (порт/пароль/root)?"           && configure_ssh_interactive || true
+  confirm "Настроить SSH, порт, пароль, root?"          && configure_ssh_interactive || true
   confirm "Включить UFW и пропустить текущий SSH-порт?" && install_or_enable_ufw || true
   confirm "Установить и настроить Fail2Ban?"            && install_fail2ban_interactive || true
   confirm "Настроить DNS через systemd-resolved?"       && configure_dns_interactive || true
   confirm "Настроить часовой пояс?"                     && configure_timezone_interactive || true
   confirm "Включить BBR?"                               && configure_bbr_interactive || true
-  confirm "Настроить IPv6 (вкл/выкл)?"                  && configure_ipv6_interactive || true
+  confirm "Настроить IPv6, вкл или выкл?"               && configure_ipv6_interactive || true
   confirm "Установить Docker?"                          && install_docker_interactive || true
   log OK "Быстрая первичная настройка завершена."
   pause
@@ -1434,15 +1449,15 @@ parse_args() {
       --self-test)       SELF_TEST=1 ;;
       --non-interactive) NON_INTERACTIVE=1 ;;
       -h|--help)
-        cat <<EOF_HELP
+        cat <<EOFHELP
 ${APP_NAME}
 
 Опции:
   --dry-run          Показать, что было бы сделано, без применения изменений.
   --self-test        Выполнить встроенную самопроверку функций.
-  --non-interactive  Не задавать подтверждений.
+  --non-interactive  Не задавать подтверждений, использовать значения по умолчанию.
   -h, --help         Показать эту справку.
-EOF_HELP
+EOFHELP
         exit 0
         ;;
       *) red "Неизвестный аргумент: $1"; exit 1 ;;
@@ -1462,9 +1477,7 @@ main() {
   parse_args "$@"
   ensure_root
   load_os_release
-  if (( ! SELF_TEST )); then
-    ensure_tty
-  fi
+  ensure_tty
   prepare_runtime
   check_os_supported
   if (( SELF_TEST )); then
