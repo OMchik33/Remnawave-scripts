@@ -65,28 +65,32 @@
 
 ## Как запускать
 
-Сначала дать права на запуск:
+Автоматическое скачивание с Гитхаб в папку `/root`, статус "исполняемый", запуск файла
 
 ```bash
-chmod +x /opt/vps.sh
+cd /root && \
+( command -v curl >/dev/null 2>&1 && curl -fsSL -o /root/vps.sh https://raw.githubusercontent.com/OMchik33/LightVPS/refs/heads/main/vps.sh || \
+  command -v wget >/dev/null 2>&1 && wget -O /root/vps.sh https://raw.githubusercontent.com/OMchik33/LightVPS/refs/heads/main/vps.sh ) && \
+chmod +x /root/vps.sh && \
+/root/vps.sh
 ```
 
 Самопроверка:
 
 ```bash
-bash /opt/vps.sh --self-test
+bash vps.sh --self-test
 ```
 
 Безопасный пробный запуск без применения изменений:
 
 ```bash
-bash /opt/vps.sh --dry-run
+bash vps.sh --dry-run
 ```
 
 Обычный запуск:
 
 ```bash
-bash /opt/vps.sh
+bash vps.sh
 ```
 
 ## Важный совет перед применением SSH-настроек
