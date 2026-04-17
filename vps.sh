@@ -98,6 +98,21 @@ load_os_release() {
   fi
 }
 
+get_launch_user() {
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    printf '%s\n' "$SUDO_USER"
+    return 0
+  fi
+  id -un 2>/dev/null || printf '%s\n' "неизвестно"
+}
+
+has_systemd_resolved() {
+  local load_state=""
+  command -v systemctl >/dev/null 2>&1 || return 1
+  load_state="$(systemctl show -p LoadState --value systemd-resolved.service 2>/dev/null || true)"
+  [[ -n "$load_state" && "$load_state" != "not-found" ]]
+}
+
 os_id()       { echo "$OS_ID"; }
 os_version()  { echo "$OS_VERSION_ID"; }
 os_codename() {
@@ -321,16 +336,31 @@ get_current_dns_servers() {
 get_current_fallback_dns_servers() {
   local dns=""
   if command -v resolvectl >/dev/null 2>&1; then
-    dns="$(resolvectl fallback-dns 2>/dev/null | awk '
-      /^Global:/ {
-        for (i = 2; i <= NF; i++) {
-          if ($i ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ || $i ~ /:/) {
-            print $i
-          }
+    dns="$(resolvectl status 2>/dev/null | awk '
+      BEGIN { in_global = 0; capture = 0 }
+      /^Global$/ { in_global = 1; capture = 0; next }
+      in_global && /^[^[:space:]]/ { in_global = 0; capture = 0 }
+      in_global && /^[[:space:]]*Fallback DNS Servers:/ {
+        line = $0
+        sub(/^[[:space:]]*Fallback DNS Servers:[[:space:]]*/, "", line)
+        if (line != "") {
+          print line
         }
-        exit
+        capture = 1
+        next
+      }
+      capture {
+        if ($0 ~ /^[[:space:]]+[0-9A-Fa-f:.%#\[\]-]+([[:space:]]+[0-9A-Fa-f:.%#\[\]-]+)*[[:space:]]*$/) {
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+          print $0
+          next
+        }
+        capture = 0
       }
     ' | paste -sd' ' -)"
+  fi
+  if [[ -z "$dns" && -f "$MANAGED_DNS_FILE" ]]; then
+    dns="$(awk -F= '/^[[:space:]]*FallbackDNS=/{val=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", val); print val; exit}' "$MANAGED_DNS_FILE" 2>/dev/null)"
   fi
   [[ -n "$dns" ]] || dns="не задан"
   printf '%s\n' "$dns"
@@ -1214,7 +1244,7 @@ firewall_menu() {
 configure_dns_interactive() {
   clear_screen
   local dns fallback choice resolv_link
-  systemctl list-unit-files 2>/dev/null | awk '{print $1}' | grep -qx 'systemd-resolved.service' || { log ERR "systemd-resolved не найден."; pause; return 1; }
+  has_systemd_resolved || { log ERR "systemd-resolved не найден."; pause; return 1; }
   resolv_link="$(readlink -f /etc/resolv.conf 2>/dev/null || echo '')"
   if [[ "$resolv_link" != /run/systemd/resolve/* ]]; then
     log WARN "/etc/resolv.conf не указывает на systemd-resolved (${resolv_link:-нет}). Настройки могут игнорироваться."
@@ -1741,6 +1771,7 @@ main_menu() {
     echo
     echo "========== ${APP_NAME} =========="
     echo "ОС: ${OS_PRETTY_NAME}"
+    echo "Запущено от: $(get_launch_user)"
     echo "--------------------------------"
     echo "1)  Быстрая первичная настройка"
     echo "2)  Обновления и пакеты"
