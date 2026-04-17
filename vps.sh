@@ -1771,7 +1771,7 @@ main_menu() {
     echo
     echo "========== ${APP_NAME} =========="
     echo "ОС: ${OS_PRETTY_NAME}"
-    echo "Запущено от: $(get_launch_user)"
+    echo "Права: root | Запустил: $(get_launch_user)"
     echo "--------------------------------"
     echo "1)  Быстрая первичная настройка"
     echo "2)  Обновления и пакеты"
