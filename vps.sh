@@ -262,7 +262,7 @@ restart_ssh() {
 apply_ssh_port_via_socket() {
   local port="$1"
   if (( DRY_RUN )); then
-    log INFO "[dry-run] write $MANAGED_SSH_SOCKET_FILE with port ${port}"
+    log INFO "[dry-run] write $MANAGED_SSH_SOCKET_FILE with IPv4+IPv6 port ${port}"
     return 0
   fi
   install -d -m 0755 "$MANAGED_SSH_SOCKET_DIR"
@@ -270,7 +270,8 @@ apply_ssh_port_via_socket() {
 # Управляется ${APP_NAME}
 [Socket]
 ListenStream=
-ListenStream=${port}
+ListenStream=0.0.0.0:${port}
+ListenStream=[::]:${port}
 EOF
   chmod 0644 "$MANAGED_SSH_SOCKET_FILE"
 }
