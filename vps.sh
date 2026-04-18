@@ -705,6 +705,7 @@ create_user_interactive() {
   [[ "$sudo_mode" == "0" ]] && return 0
 
   while true; do
+    clear_screen
     echo
     echo "Как добавить SSH-ключ?"
     echo "- Можно вставить новый публичный ключ"
