@@ -510,7 +510,7 @@ get_public_ip() {
 
 show_system_info() {
   clear_screen
-  local kernel host tz uptime_txt ip4 pub4 ssh_port ssh_pass ssh_root ufw_state f2b_state docker_state resolv_link current_dns fallback_dns
+  local kernel host tz uptime_txt ip4 pub4 ssh_port ssh_pass ssh_root ssh_root_display ufw_state f2b_state docker_state resolv_link current_dns fallback_dns
   kernel="$(uname -r)"
   host="$(hostname)"
   tz="$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo 'неизвестно')"
@@ -520,6 +520,8 @@ show_system_info() {
   ssh_port="$(get_display_ssh_port)"
   ssh_pass="$(get_effective_ssh passwordauthentication || true)"
   ssh_root="$(get_effective_ssh permitrootlogin || true)"
+  [[ -n "$ssh_root" ]] || ssh_root="неизвестно"
+  ssh_root_display="$(format_root_login_mode "$ssh_root")"
   ufw_state="$(ufw status 2>/dev/null | head -n1 || echo 'ufw не установлен')"
   if command -v fail2ban-client >/dev/null 2>&1; then
     f2b_state="$(systemctl is-active fail2ban 2>/dev/null || echo 'not-installed/inactive')"
@@ -542,7 +544,7 @@ show_system_info() {
   echo "Публичный IP:      $pub4"
   echo "SSH порт:          ${ssh_port:-неизвестно}"
   echo "SSH пароль:        ${ssh_pass:-неизвестно}"
-  echo "Root login:        ${ssh_root:-неизвестно}"
+  echo "Root login:        ${ssh_root_display:-неизвестно}"
   echo "SSH активация:     $(ssh_is_socket_activated && echo 'socket (ssh.socket)' || echo 'service')"
   echo "UFW:               $ufw_state"
   echo "Fail2Ban:          $f2b_state"
