@@ -578,7 +578,7 @@ self_test() {
     track_key_for_user list_regular_users print_regular_users show_users_brief
     create_user_interactive delete_user_interactive add_key_interactive
     set_password_interactive change_sudo_mode_interactive
-    configure_ssh_interactive configure_dns_interactive
+    manage_root_ssh_access_interactive configure_ssh_interactive configure_dns_interactive
     configure_bbr_interactive configure_ipv6_interactive
     install_docker_interactive configure_unattended_interactive
     show_system_info rollback_menu cleanup_node_interactive
@@ -912,71 +912,20 @@ change_sudo_mode_interactive() {
   pause
 }
 
-manage_users_menu() {
-  while true; do
-    clear_screen
-    echo
-    echo "===== Пользователи и SSH-ключи ====="
-    echo "Этот раздел нужен для работы с учётными записями и ключами."
-    echo "- Создание и удаление пользователей"
-    echo "- Добавление ключей"
-    echo "- Смена пароля и режима sudo"
-    echo
-    echo "1) Создать нового пользователя"
-    echo "2) Удалить пользователя"
-    echo "3) Добавить SSH-ключ пользователю/root"
-    echo "4) Задать или сменить пароль"
-    echo "5) Изменить режим sudo"
-    echo "6) Краткая инструкция по ключу для Windows"
-    echo "0) Назад"
-    read -r -p "> " choice </dev/tty
-    case "$choice" in
-      1) create_user_interactive ;;
-      2) delete_user_interactive ;;
-      3) add_key_interactive ;;
-      4) set_password_interactive ;;
-      5) change_sudo_mode_interactive ;;
-      6) show_windows_key_help ;;
-      0) return 0 ;;
-      *) echo "Неверный пункт."; pause ;;
-    esac
-  done
-}
-
-configure_ssh_interactive() {
+manage_root_ssh_access_interactive() {
   clear_screen
-  local current_port old_ufw_ssh_port port pass_auth_choice pass_auth current_root_login current_root_login_display root_choice root_login admin_user pubkey
-  current_port="$(get_display_ssh_port)"
-  old_ufw_ssh_port="$(get_ssh_firewall_port)"
+  local current_root_login current_root_login_display root_choice root_login admin_user pubkey root_missing_choice existing_config new_config backup_config had_managed_file=0
   current_root_login="$(get_effective_ssh permitrootlogin 2>/dev/null || true)"
   [[ -n "$current_root_login" ]] || current_root_login="yes"
   current_root_login_display="$(format_root_login_mode "$current_root_login")"
 
-  echo "===== SSH и доступ ====="
-  echo "Этот раздел меняет порт SSH, вход по паролю и режим root."
-  echo "- Сначала убедись, что у тебя есть рабочий SSH-ключ"
-  echo "- Не закрывай текущую сессию, пока не проверишь новую"
+  echo "===== Доступ root по SSH ====="
+  echo "Этот пункт меняет только режим входа root по SSH."
+  echo "- Закрывать доступ root стоит только после создания нового пользователя с sudo-правами"
+  echo "- Не закрывай текущую root-сессию, пока не проверишь новый вход"
+  echo "- Сначала проверь вход в отдельной сессии"
   echo
-  echo "Текущий SSH-порт: $current_port"
-  port="$(prompt_default 'Новый SSH-порт' "$current_port")"
-  [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { log ERR "Некорректный порт."; pause; return 1; }
-
-  echo
-  echo "Закрыть вход по паролю для всех пользователей SSH?"
-  echo "0) Назад"
-  echo "1) Нет — оставить вход по паролю"
-  echo "2) Да — разрешить только вход по ключу"
-  read -r -p "> " pass_auth_choice </dev/tty
-  [[ "$pass_auth_choice" == "0" ]] && return 0
-  case "$pass_auth_choice" in
-    1) pass_auth="yes" ;;
-    2) pass_auth="no" ;;
-    *) log ERR "Неверный вариант."; pause; return 1 ;;
-  esac
-
-  echo
-  echo "Настройка доступа root по SSH:"
-  echo "- Сейчас выбрано: ${current_root_login_display}"
+  echo "Сейчас выбрано: ${current_root_login_display}"
   echo "0) Назад"
   echo "1) Не менять текущий режим root"
   echo "2) key+pass — root может входить по ключу и по паролю"
@@ -992,14 +941,6 @@ configure_ssh_interactive() {
     *) log ERR "Неверный вариант."; pause; return 1 ;;
   esac
 
-  if [[ "$pass_auth" == "no" ]]; then
-    if ! has_any_admin_key; then
-      log ERR "Нельзя отключить парольный вход: не найден ни один админский SSH-ключ. Сначала добавь ключ root или пользователя из группы sudo."
-      pause
-      return 1
-    fi
-  fi
-
   if [[ "$root_login" == "prohibit-password" ]]; then
     echo
     if root_has_key; then
@@ -1007,7 +948,7 @@ configure_ssh_interactive() {
     else
       echo "У root сейчас нет SSH-ключа."
       echo "Чтобы перевести root в режим 'только по ключу', сначала выбери один из вариантов."
-      echo "0) Отмена настройки SSH"
+      echo "0) Отмена настройки доступа root"
       echo "1) Вставить новый публичный ключ для root"
       echo "2) Скопировать ключи выбранного пользователя в root"
       echo "3) Оставить root без изменений"
@@ -1037,12 +978,132 @@ configure_ssh_interactive() {
   if [[ "$root_login" == "no" || "$root_login" == "prohibit-password" ]]; then
     echo
     echo "Важно:"
+    echo "- закрывать доступ root стоит только после создания нового пользователя с sudo-правами"
     echo "- не закрывай текущую root-сессию, пока не проверишь новый вход"
     echo "- сначала проверь вход в отдельной сессии"
     confirm "Применить этот режим для root?" || {
       log WARN "Изменение режима root отменено пользователем. Оставляю текущий режим: ${current_root_login}."
       root_login="$current_root_login"
     }
+  fi
+
+  if (( DRY_RUN )); then
+    log INFO "[dry-run] update PermitRootLogin in $MANAGED_SSH_FILE"
+    log INFO "[dry-run] validate sshd config"
+    log INFO "[dry-run] restart SSH"
+    pause
+    return 0
+  fi
+
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  if [[ -f "$MANAGED_SSH_FILE" ]]; then
+    had_managed_file=1
+    backup_config="$(cat "$MANAGED_SSH_FILE")"
+    existing_config="$backup_config"
+    if grep -q '^[[:space:]]*PermitRootLogin[[:space:]]' "$MANAGED_SSH_FILE"; then
+      new_config="$(printf '%s\n' "$existing_config" | sed -E "s/^[[:space:]]*PermitRootLogin[[:space:]]+.*/PermitRootLogin ${root_login}/")"
+    else
+      new_config="${existing_config}"
+      [[ -n "$new_config" ]] && new_config+=$'\n'
+      new_config+="PermitRootLogin ${root_login}"
+    fi
+  else
+    new_config=$(cat <<EOF2
+# Управляется ${APP_NAME}
+PermitRootLogin ${root_login}
+EOF2
+)
+  fi
+  printf '%s\n' "$new_config" >"$MANAGED_SSH_FILE"
+  chmod 0644 "$MANAGED_SSH_FILE"
+
+  if ! sshd -t >>"$LOG_FILE" 2>&1; then
+    log ERR "sshd -t не прошёл. Конфиг содержит ошибки. Отменяю изменения."
+    if (( had_managed_file )); then
+      printf '%s
+' "$backup_config" >"$MANAGED_SSH_FILE"
+      chmod 0644 "$MANAGED_SSH_FILE"
+    else
+      rm -f "$MANAGED_SSH_FILE"
+    fi
+    restart_ssh || true
+    pause
+    return 1
+  fi
+
+  restart_ssh || { pause; return 1; }
+  log OK "Режим доступа root по SSH применён: ${root_login}."
+  pause
+}
+
+manage_users_menu() {
+  while true; do
+    clear_screen
+    echo
+    echo "===== Пользователи и SSH-ключи ====="
+    echo "Этот раздел нужен для работы с учётными записями и ключами."
+    echo "- Создание и удаление пользователей"
+    echo "- Добавление ключей"
+    echo "- Смена пароля и режима sudo"
+    echo "- Настройка доступа root по SSH"
+    echo
+    echo "1) Создать нового пользователя"
+    echo "2) Удалить пользователя"
+    echo "3) Добавить SSH-ключ пользователю/root"
+    echo "4) Задать или сменить пароль"
+    echo "5) Изменить режим sudo"
+    echo "6) Доступ root по SSH"
+    echo "7) Краткая инструкция по ключу для Windows"
+    echo "0) Назад"
+    read -r -p "> " choice </dev/tty
+    case "$choice" in
+      1) create_user_interactive ;;
+      2) delete_user_interactive ;;
+      3) add_key_interactive ;;
+      4) set_password_interactive ;;
+      5) change_sudo_mode_interactive ;;
+      6) manage_root_ssh_access_interactive ;;
+      7) show_windows_key_help ;;
+      0) return 0 ;;
+      *) echo "Неверный пункт."; pause ;;
+    esac
+  done
+}
+
+configure_ssh_interactive() {
+  clear_screen
+  local current_port old_ufw_ssh_port port pass_auth_choice pass_auth
+  current_port="$(get_display_ssh_port)"
+  old_ufw_ssh_port="$(get_ssh_firewall_port)"
+
+  echo "===== SSH и доступ ====="
+  echo "Этот раздел меняет порт SSH и вход по паролю."
+  echo "- Сначала убедись, что у тебя есть рабочий SSH-ключ"
+  echo "- Не закрывай текущую сессию, пока не проверишь новую"
+  echo
+  echo "Текущий SSH-порт: $current_port"
+  port="$(prompt_default 'Новый SSH-порт' "$current_port")"
+  [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { log ERR "Некорректный порт."; pause; return 1; }
+
+  echo
+  echo "Закрыть вход по паролю для всех пользователей SSH?"
+  echo "0) Назад"
+  echo "1) Нет — оставить вход по паролю"
+  echo "2) Да — разрешить только вход по ключу"
+  read -r -p "> " pass_auth_choice </dev/tty
+  [[ "$pass_auth_choice" == "0" ]] && return 0
+  case "$pass_auth_choice" in
+    1) pass_auth="yes" ;;
+    2) pass_auth="no" ;;
+    *) log ERR "Неверный вариант."; pause; return 1 ;;
+  esac
+
+  if [[ "$pass_auth" == "no" ]]; then
+    if ! has_any_admin_key; then
+      log ERR "Нельзя отключить парольный вход: не найден ни один админский SSH-ключ. Сначала добавь ключ root или пользователя из группы sudo."
+      pause
+      return 1
+    fi
   fi
 
   if (( DRY_RUN )); then
@@ -1059,28 +1120,90 @@ configure_ssh_interactive() {
   install -d -m 0755 /etc/ssh/sshd_config.d
   if ssh_is_socket_activated; then
     apply_ssh_port_via_socket "$port"
-    cat >"$MANAGED_SSH_FILE" <<EOF2
+    if [[ -f "$MANAGED_SSH_FILE" ]]; then
+      if grep -q '^[[:space:]]*Port[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E '/^[[:space:]]*Port[[:space:]]/d' "$MANAGED_SSH_FILE"
+      fi
+      if grep -q '^[[:space:]]*PasswordAuthentication[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E "s/^[[:space:]]*PasswordAuthentication[[:space:]]+.*/PasswordAuthentication ${pass_auth}/" "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' "PasswordAuthentication ${pass_auth}" >>"$MANAGED_SSH_FILE"
+      fi
+      if grep -q '^[[:space:]]*PubkeyAuthentication[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E 's/^[[:space:]]*PubkeyAuthentication[[:space:]]+.*/PubkeyAuthentication yes/' "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' 'PubkeyAuthentication yes' >>"$MANAGED_SSH_FILE"
+      fi
+      if grep -q '^[[:space:]]*KbdInteractiveAuthentication[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E 's/^[[:space:]]*KbdInteractiveAuthentication[[:space:]]+.*/KbdInteractiveAuthentication no/' "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' 'KbdInteractiveAuthentication no' >>"$MANAGED_SSH_FILE"
+      fi
+      if grep -q '^[[:space:]]*PermitEmptyPasswords[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E 's/^[[:space:]]*PermitEmptyPasswords[[:space:]]+.*/PermitEmptyPasswords no/' "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' 'PermitEmptyPasswords no' >>"$MANAGED_SSH_FILE"
+      fi
+      if grep -q '^[[:space:]]*UsePAM[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E 's/^[[:space:]]*UsePAM[[:space:]]+.*/UsePAM yes/' "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' 'UsePAM yes' >>"$MANAGED_SSH_FILE"
+      fi
+    else
+      cat >"$MANAGED_SSH_FILE" <<EOF2
 # Управляется ${APP_NAME}
 # Порт для socket-активации задаётся в ${MANAGED_SSH_SOCKET_FILE}
 PubkeyAuthentication yes
 PasswordAuthentication ${pass_auth}
 KbdInteractiveAuthentication no
 PermitEmptyPasswords no
-PermitRootLogin ${root_login}
 UsePAM yes
 EOF2
+    fi
   else
-    rm -f "$MANAGED_SSH_SOCKET_FILE"
-    cat >"$MANAGED_SSH_FILE" <<EOF2
+    if [[ -f "$MANAGED_SSH_FILE" ]]; then
+      if grep -q '^[[:space:]]*Port[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E "s/^[[:space:]]*Port[[:space:]]+.*/Port ${port}/" "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' "Port ${port}" >>"$MANAGED_SSH_FILE"
+      fi
+      if grep -q '^[[:space:]]*PasswordAuthentication[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E "s/^[[:space:]]*PasswordAuthentication[[:space:]]+.*/PasswordAuthentication ${pass_auth}/" "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' "PasswordAuthentication ${pass_auth}" >>"$MANAGED_SSH_FILE"
+      fi
+      if grep -q '^[[:space:]]*PubkeyAuthentication[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E 's/^[[:space:]]*PubkeyAuthentication[[:space:]]+.*/PubkeyAuthentication yes/' "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' 'PubkeyAuthentication yes' >>"$MANAGED_SSH_FILE"
+      fi
+      if grep -q '^[[:space:]]*KbdInteractiveAuthentication[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E 's/^[[:space:]]*KbdInteractiveAuthentication[[:space:]]+.*/KbdInteractiveAuthentication no/' "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' 'KbdInteractiveAuthentication no' >>"$MANAGED_SSH_FILE"
+      fi
+      if grep -q '^[[:space:]]*PermitEmptyPasswords[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E 's/^[[:space:]]*PermitEmptyPasswords[[:space:]]+.*/PermitEmptyPasswords no/' "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' 'PermitEmptyPasswords no' >>"$MANAGED_SSH_FILE"
+      fi
+      if grep -q '^[[:space:]]*UsePAM[[:space:]]' "$MANAGED_SSH_FILE"; then
+        sed -i -E 's/^[[:space:]]*UsePAM[[:space:]]+.*/UsePAM yes/' "$MANAGED_SSH_FILE"
+      else
+        printf '%s\n' 'UsePAM yes' >>"$MANAGED_SSH_FILE"
+      fi
+    else
+      rm -f "$MANAGED_SSH_SOCKET_FILE"
+      cat >"$MANAGED_SSH_FILE" <<EOF2
 # Управляется ${APP_NAME}
 Port ${port}
 PubkeyAuthentication yes
 PasswordAuthentication ${pass_auth}
 KbdInteractiveAuthentication no
 PermitEmptyPasswords no
-PermitRootLogin ${root_login}
 UsePAM yes
 EOF2
+    fi
   fi
   chmod 0644 "$MANAGED_SSH_FILE"
 
@@ -1102,7 +1225,7 @@ EOF2
     fi
   fi
 
-  log OK "SSH-настройки применены. Порт: ${port}. Режим root: ${root_login}."
+  log OK "SSH-настройки применены. Порт: ${port}. Парольный вход: ${pass_auth}."
   pause
 }
 
@@ -1796,7 +1919,8 @@ quick_start_menu() {
   confirm "Обновить систему сейчас?"                    && { run_cmd apt-get update || true; DEBIAN_FRONTEND=noninteractive run_cmd apt-get upgrade -y || true; }
   confirm "Установить рекомендуемые пакеты?"            && install_or_update_recommended "" || true
   confirm "Создать нового пользователя?"                && create_user_interactive || true
-  confirm "Настроить SSH (порт/пароль/root)?"           && configure_ssh_interactive || true
+  confirm "Настроить SSH (порт/пароль)?"                && configure_ssh_interactive || true
+  confirm "Настроить доступ root по SSH?"                && manage_root_ssh_access_interactive || true
   confirm "Включить UFW и пропустить текущий SSH-порт?" && install_or_enable_ufw || true
   confirm "Установить и настроить Fail2Ban?"            && install_fail2ban_interactive || true
   confirm "Настроить DNS через systemd-resolved?"       && configure_dns_interactive || true
