@@ -704,35 +704,51 @@ create_user_interactive() {
   read -r -p "> " sudo_mode </dev/tty
   [[ "$sudo_mode" == "0" ]] && return 0
 
-  echo
-  echo "Как добавить SSH-ключ?"
-  echo "- Можно вставить новый публичный ключ"
-  echo "- Или скопировать все ключи root"
-  echo "0) Назад"
-  echo "1) Вставить новый публичный ключ"
-  echo "2) Скопировать все ключи root"
-  echo "3) Пока не добавлять ключ"
-  read -r -p "> " key_mode </dev/tty
-  [[ "$key_mode" == "0" ]] && return 0
+  while true; do
+    echo
+    echo "Как добавить SSH-ключ?"
+    echo "- Можно вставить новый публичный ключ"
+    echo "- Или скопировать все ключи root"
+    echo "0) Назад"
+    echo "1) Вставить новый публичный ключ"
+    echo "2) Скопировать все ключи root"
+    echo "3) Пока не добавлять ключ"
+    read -r -p "> " key_mode </dev/tty
+    [[ "$key_mode" == "0" ]] && return 0
+
+    case "$key_mode" in
+      1)
+        pubkey="$(prompt_nonempty 'Вставь строку публичного SSH-ключа (.pub): ')"
+        validate_pubkey_strict "$pubkey" || { log ERR "Строка не похожа на корректный публичный SSH-ключ."; pause; continue; }
+        break
+        ;;
+      2)
+        rootkeys_file="/root/.ssh/authorized_keys"
+        [[ -s "$rootkeys_file" ]] || { log ERR "У root нет ключей в /root/.ssh/authorized_keys."; pause; continue; }
+        break
+        ;;
+      3)
+        echo
+        echo "Внимание:"
+        echo "- У пользователя не будет SSH-ключа"
+        echo "- Если потом отключить вход по паролю в SSH, войти без ключа не получится"
+        echo "- Если планируешь позже отключить вход по паролю, добавь пользователю SSH-ключ"
+        read -r -p "Нажми Enter для возврата в меню..." _ </dev/tty
+        continue
+        ;;
+      *)
+        log ERR "Неверный вариант ключа."
+        pause
+        continue
+        ;;
+    esac
+  done
 
   if [[ "$sudo_mode" == "2" ]]; then
     read -r -s -p "Задай пароль для нового пользователя: " pass1 </dev/tty; echo
     read -r -s -p "Повтори пароль: " pass2 </dev/tty; echo
     [[ "$pass1" == "$pass2" ]] || { log ERR "Пароли не совпадают."; pause; return 1; }
   fi
-
-  case "$key_mode" in
-    1)
-      pubkey="$(prompt_nonempty 'Вставь строку публичного SSH-ключа (.pub): ')"
-      validate_pubkey_strict "$pubkey" || { log ERR "Строка не похожа на корректный публичный SSH-ключ."; pause; return 1; }
-      ;;
-    2)
-      rootkeys_file="/root/.ssh/authorized_keys"
-      [[ -s "$rootkeys_file" ]] || { log ERR "У root нет ключей в /root/.ssh/authorized_keys."; pause; return 1; }
-      ;;
-    3) ;;
-    *) log ERR "Неверный вариант ключа."; pause; return 1 ;;
-  esac
 
   run_cmd adduser --disabled-password --gecos "" "$username" || { pause; return 1; }
   track_created_user "$username"
