@@ -1934,18 +1934,55 @@ quick_start_menu() {
   echo "Режим root по SSH НЕ будет ограничен автоматически."
   confirm "Продолжить?" || return 0
 
-  confirm "Обновить систему сейчас?"                    && { run_cmd apt-get update || true; DEBIAN_FRONTEND=noninteractive run_cmd apt-get upgrade -y || true; }
-  confirm "Установить рекомендуемые пакеты?"            && install_or_update_recommended "" || true
-  confirm "Создать нового пользователя?"                && create_user_interactive || true
-  confirm "Настроить SSH (порт/пароль)?"                && configure_ssh_interactive || true
-  confirm "Настроить доступ root по SSH?"                && manage_root_ssh_access_interactive || true
-  confirm "Включить UFW и пропустить текущий SSH-порт?" && install_or_enable_ufw || true
-  confirm "Установить и настроить Fail2Ban?"            && install_fail2ban_interactive || true
-  confirm "Настроить DNS через systemd-resolved?"       && configure_dns_interactive || true
-  confirm "Настроить часовой пояс?"                     && configure_timezone_interactive || true
-  confirm "Включить BBR?"                               && configure_bbr_interactive || true
-  confirm "Настроить IPv6 (вкл/выкл)?"                  && configure_ipv6_interactive || true
-  confirm "Установить Docker?"                          && install_docker_interactive || true
+  if confirm "Обновить систему сейчас?"; then
+    run_cmd apt-get update || { log ERR "Ошибка на этапе: Обновление системы. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+    DEBIAN_FRONTEND=noninteractive run_cmd apt-get upgrade -y || { log ERR "Ошибка на этапе: Обновление системы. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Установить рекомендуемые пакеты?"; then
+    install_or_update_recommended "" || { log ERR "Ошибка на этапе: Установка рекомендуемых пакетов. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Создать нового пользователя?"; then
+    create_user_interactive || { log ERR "Ошибка на этапе: Создание нового пользователя. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Настроить SSH (порт/пароль)?"; then
+    configure_ssh_interactive || { log ERR "Ошибка на этапе: Настройка SSH. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Настроить доступ root по SSH?"; then
+    manage_root_ssh_access_interactive || { log ERR "Ошибка на этапе: Настройка доступа root по SSH. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Включить UFW и пропустить текущий SSH-порт?"; then
+    install_or_enable_ufw || { log ERR "Ошибка на этапе: Настройка UFW. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Установить и настроить Fail2Ban?"; then
+    install_fail2ban_interactive || { log ERR "Ошибка на этапе: Установка и настройка Fail2Ban. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Настроить DNS через systemd-resolved?"; then
+    configure_dns_interactive || { log ERR "Ошибка на этапе: Настройка DNS. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Настроить часовой пояс?"; then
+    configure_timezone_interactive || { log ERR "Ошибка на этапе: Настройка часового пояса. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Включить BBR?"; then
+    configure_bbr_interactive || { log ERR "Ошибка на этапе: Настройка BBR. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Настроить IPv6 (вкл/выкл)?"; then
+    configure_ipv6_interactive || { log ERR "Ошибка на этапе: Настройка IPv6. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
+  if confirm "Установить Docker?"; then
+    install_docker_interactive || { log ERR "Ошибка на этапе: Установка Docker. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+  fi
+
   log OK "Быстрая первичная настройка завершена."
   pause
 }
