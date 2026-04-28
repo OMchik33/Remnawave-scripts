@@ -326,6 +326,39 @@ get_ssh_firewall_port() {
   printf '%s\n' "$port"
 }
 
+is_port_busy_by_other_service() {
+  local port="$1" current_ssh_port
+  current_ssh_port="$(get_ssh_firewall_port 2>/dev/null || true)"
+
+  if [[ "$current_ssh_port" == "$port" ]]; then
+    return 1
+  fi
+
+  ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q .
+}
+
+check_sshd_include_order_warning() {
+  local main="/etc/ssh/sshd_config"
+
+  [[ -f "$main" ]] || return 0
+
+  if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf([[:space:]]|$)' "$main"; then
+    log WARN "В $main не найдена активная строка Include /etc/ssh/sshd_config.d/*.conf. Drop-in SSH-настройки могут не применяться."
+    return 0
+  fi
+
+  if awk '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*Include[[:space:]]+\/etc\/ssh\/sshd_config\.d\/\*\.conf([[:space:]]|$)/ { include_seen=1 }
+    !include_seen && /^[[:space:]]*(Port|PasswordAuthentication|PermitRootLogin|PubkeyAuthentication|KbdInteractiveAuthentication|PermitEmptyPasswords|UsePAM)[[:space:]]+/ {
+      found=1
+    }
+    END { exit found ? 0 : 1 }
+  ' "$main"; then
+    log WARN "В $main есть SSH-директивы выше Include. Они могут иметь приоритет над drop-in файлом LightVPS."
+  fi
+}
+
 get_current_dns_servers() {
   local dns=""
   if command -v resolvectl >/dev/null 2>&1; then
@@ -401,21 +434,25 @@ restart_ssh() {
   local unit
   unit="$(ssh_control_unit)"
   [[ -n "$unit" ]] || { log ERR "Не удалось определить unit SSH."; return 1; }
+
   run_cmd systemctl daemon-reload || return 1
+
   if ssh_is_socket_activated; then
     run_cmd systemctl restart ssh.socket || return 1
-    run_cmd systemctl restart ssh.service || true
   else
     run_cmd systemctl restart "$unit" || return 1
   fi
+
   if (( DRY_RUN )); then
     log OK "[dry-run] SSH был бы перезапущен."
     return 0
   fi
-  if systemctl is-active --quiet ssh.service || systemctl is-active --quiet sshd.service || systemctl is-active --quiet ssh.socket; then
+
+  if systemctl is-active --quiet ssh.socket || systemctl is-active --quiet ssh.service || systemctl is-active --quiet sshd.service; then
     log OK "SSH успешно перезапущен."
     return 0
   fi
+
   log ERR "SSH не активен после перезапуска."
   return 1
 }
@@ -470,12 +507,16 @@ add_public_key_to_user() {
     append_unique_line "$STATE_DIR/keys/${username}.list" "$pubkey"
     return 0
   fi
-  install -d -m 0700 -o "${owner%%:*}" -g "${owner##*:}" "$ssh_dir" 2>/dev/null || mkdir -p "$ssh_dir"
-  touch "$auth_file"
-  chmod 700 "$ssh_dir"
-  chmod 600 "$auth_file"
+
+  mkdir -p "$ssh_dir" || return 1
+  touch "$auth_file" || return 1
+  chmod 700 "$ssh_dir" || return 1
+  chmod 600 "$auth_file" || return 1
+  chown "$owner" "$ssh_dir" "$auth_file" || return 1
+
   grep -Fxq "$pubkey" "$auth_file" 2>/dev/null || printf '%s\n' "$pubkey" >>"$auth_file"
-  chown -R "$owner" "$ssh_dir" || return 1
+  chown "$owner" "$auth_file" || return 1
+
   track_key_for_user "$username" "$pubkey"
   log OK "Ключ добавлен пользователю ${username}."
 }
@@ -585,7 +626,8 @@ self_test() {
     install_docker_interactive configure_unattended_interactive
     show_system_info rollback_menu cleanup_node_interactive
     is_valid_pubkey validate_pubkey_strict has_any_admin_key apply_ssh_port_via_socket
-    get_display_ssh_port get_ssh_firewall_port install_or_enable_ufw apply_ufw_limit
+    get_display_ssh_port get_ssh_firewall_port is_port_busy_by_other_service
+    check_sshd_include_order_warning install_or_enable_ufw apply_ufw_limit
   )
   for f in "${funcs[@]}"; do
     declare -F "$f" >/dev/null || { echo "Отсутствует функция: $f"; ((errors++)); }
@@ -820,6 +862,7 @@ delete_user_interactive() {
   [[ "$mode" == "0" ]] && return 0
 
   if (( ! DRY_RUN )); then
+    loginctl kill-user "$username" 2>/dev/null || true
     pkill -KILL -u "$username" 2>/dev/null || true
     sleep 1
   fi
@@ -907,7 +950,11 @@ change_sudo_mode_interactive() {
   [[ "$mode" == "0" ]] && return 0
   case "$mode" in
     1)
-      run_cmd gpasswd -d "$username" sudo || true
+      if id -nG "$username" 2>/dev/null | tr ' ' '\n' | grep -qx 'sudo'; then
+        run_cmd gpasswd -d "$username" sudo || { pause; return 1; }
+      else
+        log INFO "Пользователь $username не состоит в группе sudo."
+      fi
       if (( ! DRY_RUN )); then rm -f "$sudoers"; fi
       ;;
     2)
@@ -1035,6 +1082,8 @@ EOF2
   printf '%s\n' "$new_config" >"$MANAGED_SSH_FILE"
   chmod 0644 "$MANAGED_SSH_FILE"
 
+  check_sshd_include_order_warning
+
   if ! sshd -t >>"$LOG_FILE" 2>&1; then
     log ERR "sshd -t не прошёл. Конфиг содержит ошибки. Отменяю изменения."
     if (( had_managed_file )); then
@@ -1102,6 +1151,12 @@ configure_ssh_interactive() {
   echo "Текущий SSH-порт: $current_port"
   port="$(prompt_default 'Новый SSH-порт' "$current_port")"
   [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { log ERR "Некорректный порт."; pause; return 1; }
+
+  if is_port_busy_by_other_service "$port"; then
+    log ERR "Порт ${port} уже занят другой службой. SSH на него переводить опасно."
+    pause
+    return 1
+  fi
 
   echo
   echo "Закрыть вход по паролю для всех пользователей SSH?"
@@ -1224,6 +1279,8 @@ EOF2
     fi
   fi
   chmod 0644 "$MANAGED_SSH_FILE"
+
+  check_sshd_include_order_warning
 
   if ! sshd -t >>"$LOG_FILE" 2>&1; then
     log ERR "sshd -t не прошёл. Конфиг содержит ошибки. Отменяю изменения."
