@@ -140,6 +140,47 @@ run_cmd() {
   "$@" >>"$LOG_FILE" 2>&1
 }
 
+
+repair_apt_dpkg_state() {
+  if (( DRY_RUN )); then
+    log INFO "[dry-run] Проверка и восстановление состояния dpkg/apt перед установкой пакетов."
+    return 0
+  fi
+
+  log INFO "Проверяю состояние dpkg/apt перед установкой пакетов."
+
+  if dpkg --audit 2>/dev/null | grep -q .; then
+    log WARN "dpkg сообщает о незавершённой настройке пакетов. Пробую выполнить: dpkg --configure -a"
+    run_cmd env DEBIAN_FRONTEND=noninteractive dpkg --configure -a || {
+      log ERR "Не удалось автоматически завершить настройку dpkg. Выполни вручную: dpkg --configure -a"
+      return 1
+    }
+  fi
+
+  if ! apt-get check >>"$LOG_FILE" 2>&1; then
+    log WARN "apt-get check обнаружил проблемы с зависимостями. Пробую выполнить: apt-get -f install"
+    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get -f install -y || {
+      log ERR "Не удалось автоматически исправить зависимости apt. Подробности смотри в логе: ${LOG_FILE}"
+      return 1
+    }
+  fi
+
+  if ! dpkg --configure --pending >>"$LOG_FILE" 2>&1; then
+    log WARN "Остались пакеты, ожидающие настройки. Пробую повторно выполнить: dpkg --configure -a"
+    run_cmd env DEBIAN_FRONTEND=noninteractive dpkg --configure -a || {
+      log ERR "Не удалось автоматически настроить ожидающие пакеты. Подробности смотри в логе: ${LOG_FILE}"
+      return 1
+    }
+  fi
+
+  if ! apt-get check >>"$LOG_FILE" 2>&1; then
+    log ERR "Состояние apt/dpkg всё ещё повреждено после автоматического исправления. Подробности смотри в логе: ${LOG_FILE}"
+    return 1
+  fi
+
+  log OK "Состояние dpkg/apt проверено. Можно продолжать установку пакетов."
+}
+
 append_unique_line() {
   local file="$1" line="$2"
   if (( DRY_RUN )); then
@@ -663,8 +704,14 @@ install_or_update_recommended() {
   fi
 
   log INFO "Будут установлены/обновлены пакеты: ${packages[*]}"
+  repair_apt_dpkg_state || return 1
   run_cmd apt-get update || return 1
-  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}" || return 1
+  repair_apt_dpkg_state || return 1
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}" || {
+    log ERR "apt-get install завершился с ошибкой. Пробую восстановить dpkg/apt и повторить установку один раз."
+    repair_apt_dpkg_state || return 1
+    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}" || return 1
+  }
 
   if (( DRY_RUN )); then
     log OK "[dry-run] Рекомендуемые пакеты обработаны."
@@ -727,7 +774,7 @@ updates_menu() {
         echo "- mc, htop, curl, wget, unzip, nano"
         echo "- jq, git, mtr-tiny, bash-completion, ncdu"
         read -r -p "Дополнительные пакеты через пробел (или Enter): " extra </dev/tty
-        install_or_update_recommended "$extra"
+        install_or_update_recommended "$extra" || log ERR "Рекомендуемые пакеты не установлены. Подробности смотри в логе: ${LOG_FILE}"
         pause
         ;;
       6)
@@ -2154,7 +2201,7 @@ main() {
     return $?
   fi
   main_menu
-  log OK "Работа завершена."
+  log INFO "Работа скрипта завершена."
 }
 
 main "$@"
