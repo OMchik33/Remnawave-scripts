@@ -25,6 +25,7 @@ LOG_FILE="${LOG_DIR}/${RUN_ID}.log"
 DRY_RUN=0
 SELF_TEST=0
 NON_INTERACTIVE=0
+SCRIPT_PATCH_VERSION="apt-dpkg-preflight-v2"
 
 RECOMMENDED_PACKAGES=(mc htop curl wget unzip nano jq git mtr-tiny ca-certificates gnupg bash-completion ncdu)
 
@@ -129,6 +130,7 @@ prepare_runtime() {
   : >"$LOG_FILE"
   chmod 0640 "$LOG_FILE" || true
   log OK "Запуск ${APP_NAME}. Лог: ${LOG_FILE}"
+  log INFO "Версия правки скрипта: ${SCRIPT_PATCH_VERSION}"
 }
 
 run_cmd() {
@@ -147,34 +149,22 @@ repair_apt_dpkg_state() {
     return 0
   fi
 
-  log INFO "Проверяю состояние dpkg/apt перед установкой пакетов."
+  log INFO "Проверяю и при необходимости восстанавливаю состояние dpkg/apt перед установкой пакетов."
 
-  if dpkg --audit 2>/dev/null | grep -q .; then
-    log WARN "dpkg сообщает о незавершённой настройке пакетов. Пробую выполнить: dpkg --configure -a"
-    run_cmd env DEBIAN_FRONTEND=noninteractive dpkg --configure -a || {
-      log ERR "Не удалось автоматически завершить настройку dpkg. Выполни вручную: dpkg --configure -a"
-      return 1
-    }
-  fi
+  # Безопасно запускать всегда: если настраивать нечего, команда быстро завершится без изменений.
+  # Это исправляет ситуацию, когда apt падает с ошибкой "dpkg was interrupted".
+  run_cmd env DEBIAN_FRONTEND=noninteractive dpkg --configure -a || {
+    log ERR "Не удалось автоматически завершить настройку dpkg. Подробности смотри в логе: ${LOG_FILE}"
+    return 1
+  }
 
-  if ! apt-get check >>"$LOG_FILE" 2>&1; then
-    log WARN "apt-get check обнаружил проблемы с зависимостями. Пробую выполнить: apt-get -f install"
-    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get -f install -y || {
-      log ERR "Не удалось автоматически исправить зависимости apt. Подробности смотри в логе: ${LOG_FILE}"
-      return 1
-    }
-  fi
-
-  if ! dpkg --configure --pending >>"$LOG_FILE" 2>&1; then
-    log WARN "Остались пакеты, ожидающие настройки. Пробую повторно выполнить: dpkg --configure -a"
-    run_cmd env DEBIAN_FRONTEND=noninteractive dpkg --configure -a || {
-      log ERR "Не удалось автоматически настроить ожидающие пакеты. Подробности смотри в логе: ${LOG_FILE}"
-      return 1
-    }
-  fi
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get -f install -y || {
+    log ERR "Не удалось автоматически исправить зависимости apt. Подробности смотри в логе: ${LOG_FILE}"
+    return 1
+  }
 
   if ! apt-get check >>"$LOG_FILE" 2>&1; then
-    log ERR "Состояние apt/dpkg всё ещё повреждено после автоматического исправления. Подробности смотри в логе: ${LOG_FILE}"
+    log ERR "apt-get check всё ещё сообщает об ошибках. Подробности смотри в логе: ${LOG_FILE}"
     return 1
   fi
 
@@ -704,14 +694,20 @@ install_or_update_recommended() {
   fi
 
   log INFO "Будут установлены/обновлены пакеты: ${packages[*]}"
+
   repair_apt_dpkg_state || return 1
   run_cmd apt-get update || return 1
   repair_apt_dpkg_state || return 1
-  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}" || {
+
+  if ! run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}"; then
     log ERR "apt-get install завершился с ошибкой. Пробую восстановить dpkg/apt и повторить установку один раз."
     repair_apt_dpkg_state || return 1
-    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}" || return 1
-  }
+    run_cmd apt-get update || return 1
+    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}" || {
+      log ERR "Повторная установка рекомендуемых пакетов тоже завершилась ошибкой. Подробности смотри в логе: ${LOG_FILE}"
+      return 1
+    }
+  fi
 
   if (( DRY_RUN )); then
     log OK "[dry-run] Рекомендуемые пакеты обработаны."
@@ -733,10 +729,6 @@ install_or_update_recommended() {
   echo
   echo "Рекомендуемые программы установлены или уже были установлены:"
   echo "- mc — файловый менеджер"
-  echo "- htop — просмотр нагрузки"
-  echo "- curl / wget — загрузка и проверка URL"
-  echo "- unzip — распаковка zip"
-  echo "- nano — простой редактор"
   echo "- jq — работа с JSON"
   echo "- git — работа с репозиториями"
   echo "- mtr-tiny — диагностика сети"
@@ -774,7 +766,9 @@ updates_menu() {
         echo "- mc, htop, curl, wget, unzip, nano"
         echo "- jq, git, mtr-tiny, bash-completion, ncdu"
         read -r -p "Дополнительные пакеты через пробел (или Enter): " extra </dev/tty
-        install_or_update_recommended "$extra" || log ERR "Рекомендуемые пакеты не установлены. Подробности смотри в логе: ${LOG_FILE}"
+        if ! install_or_update_recommended "$extra"; then
+          log ERR "Рекомендуемые пакеты не установлены. Подробности смотри в логе: ${LOG_FILE}"
+        fi
         pause
         ;;
       6)
@@ -2193,13 +2187,16 @@ main() {
   parse_args "$@"
   ensure_root
   load_os_release
-  ensure_tty
-  prepare_runtime
-  check_os_supported
   if (( SELF_TEST )); then
+    NON_INTERACTIVE=1
+    prepare_runtime
+    check_os_supported
     self_test
     return $?
   fi
+  ensure_tty
+  prepare_runtime
+  check_os_supported
   main_menu
   log INFO "Работа скрипта завершена."
 }
