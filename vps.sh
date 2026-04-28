@@ -648,15 +648,43 @@ self_test() {
 install_or_update_recommended() {
   local extra="$1"
   local packages=("${RECOMMENDED_PACKAGES[@]}")
+  local pkg
+  local missing=()
+
   if [[ -n "$extra" ]]; then
     local extra_arr=()
     read -ra extra_arr <<<"$extra"
     packages+=("${extra_arr[@]}")
   fi
+
+  if (( ${#packages[@]} == 0 )); then
+    log WARN "Список пакетов пуст — устанавливать нечего."
+    return 0
+  fi
+
+  log INFO "Будут установлены/обновлены пакеты: ${packages[*]}"
   run_cmd apt-get update || return 1
-  DEBIAN_FRONTEND=noninteractive run_cmd apt-get install -y "${packages[@]}" || return 1
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}" || return 1
+
+  if (( DRY_RUN )); then
+    log OK "[dry-run] Рекомендуемые пакеты обработаны."
+    return 0
+  fi
+
+  for pkg in "${packages[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
+      missing+=("$pkg")
+    fi
+  done
+
+  if (( ${#missing[@]} > 0 )); then
+    log ERR "apt-get завершился, но эти пакеты не найдены как установленные: ${missing[*]}"
+    log ERR "Подробности смотри в логе: ${LOG_FILE}"
+    return 1
+  fi
+
   echo
-  echo "Рекомендуемые программы:"
+  echo "Рекомендуемые программы установлены или уже были установлены:"
   echo "- mc — файловый менеджер"
   echo "- htop — просмотр нагрузки"
   echo "- curl / wget — загрузка и проверка URL"
@@ -667,7 +695,7 @@ install_or_update_recommended() {
   echo "- mtr-tiny — диагностика сети"
   echo "- bash-completion — автодополнение команд"
   echo "- ncdu — просмотр занятого места"
-  log OK "Рекомендуемые пакеты обработаны."
+  log OK "Рекомендуемые пакеты проверены и установлены."
 }
 
 updates_menu() {
