@@ -25,7 +25,7 @@ LOG_FILE="${LOG_DIR}/${RUN_ID}.log"
 DRY_RUN=0
 SELF_TEST=0
 NON_INTERACTIVE=0
-SCRIPT_PATCH_VERSION="apt-dpkg-preflight-v2"
+SCRIPT_PATCH_VERSION="ssh-apt-root-fix-v4"
 
 RECOMMENDED_PACKAGES=(mc htop curl wget unzip nano jq git mtr-tiny ca-certificates gnupg bash-completion ncdu)
 
@@ -142,35 +142,6 @@ run_cmd() {
   "$@" >>"$LOG_FILE" 2>&1
 }
 
-
-repair_apt_dpkg_state() {
-  if (( DRY_RUN )); then
-    log INFO "[dry-run] Проверка и восстановление состояния dpkg/apt перед установкой пакетов."
-    return 0
-  fi
-
-  log INFO "Проверяю и при необходимости восстанавливаю состояние dpkg/apt перед установкой пакетов."
-
-  # Безопасно запускать всегда: если настраивать нечего, команда быстро завершится без изменений.
-  # Это исправляет ситуацию, когда apt падает с ошибкой "dpkg was interrupted".
-  run_cmd env DEBIAN_FRONTEND=noninteractive dpkg --configure -a || {
-    log ERR "Не удалось автоматически завершить настройку dpkg. Подробности смотри в логе: ${LOG_FILE}"
-    return 1
-  }
-
-  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get -f install -y || {
-    log ERR "Не удалось автоматически исправить зависимости apt. Подробности смотри в логе: ${LOG_FILE}"
-    return 1
-  }
-
-  if ! apt-get check >>"$LOG_FILE" 2>&1; then
-    log ERR "apt-get check всё ещё сообщает об ошибках. Подробности смотри в логе: ${LOG_FILE}"
-    return 1
-  fi
-
-  log OK "Состояние dpkg/apt проверено. Можно продолжать установку пакетов."
-}
-
 append_unique_line() {
   local file="$1" line="$2"
   if (( DRY_RUN )); then
@@ -276,6 +247,7 @@ show_users_brief() {
 }
 
 get_effective_ssh() {
+  ensure_sshd_runtime_dir >/dev/null 2>&1 || true
   sshd -T 2>/dev/null | awk -v k="$1" 'tolower($1)==tolower(k){print $2; exit}'
 }
 
@@ -444,6 +416,46 @@ get_current_fallback_dns_servers() {
   printf '%s\n' "$dns"
 }
 
+ensure_sshd_runtime_dir() {
+  if (( DRY_RUN )); then
+    log INFO "[dry-run] ensure /run/sshd exists"
+    return 0
+  fi
+  install -d -m 0755 -o root -g root /run/sshd 2>>"$LOG_FILE" || {
+    log ERR "Не удалось создать /run/sshd. SSH-проверка или перезапуск могут завершиться ошибкой."
+    return 1
+  }
+}
+
+disable_ufw_if_installed() {
+  if ! command -v ufw >/dev/null 2>&1; then
+    log WARN "UFW не установлен — отключать нечего."
+    return 0
+  fi
+  run_cmd ufw disable
+}
+
+repair_apt_dpkg_state() {
+  if (( DRY_RUN )); then
+    log INFO "[dry-run] Проверка и восстановление состояния dpkg/apt перед установкой пакетов."
+    return 0
+  fi
+  log INFO "Проверяю и при необходимости восстанавливаю состояние dpkg/apt перед установкой пакетов."
+  run_cmd env DEBIAN_FRONTEND=noninteractive dpkg --configure -a || {
+    log ERR "Не удалось автоматически завершить настройку dpkg. Подробности смотри в логе: ${LOG_FILE}"
+    return 1
+  }
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get -f install -y || {
+    log ERR "Не удалось автоматически исправить зависимости apt. Подробности смотри в логе: ${LOG_FILE}"
+    return 1
+  }
+  if ! apt-get check >>"$LOG_FILE" 2>&1; then
+    log ERR "apt-get check всё ещё сообщает об ошибках. Подробности смотри в логе: ${LOG_FILE}"
+    return 1
+  fi
+  log OK "Состояние dpkg/apt проверено. Можно продолжать установку пакетов."
+}
+
 apply_ssh_port_via_socket() {
   local port="$1"
   if (( DRY_RUN )); then
@@ -467,6 +479,7 @@ restart_ssh() {
   [[ -n "$unit" ]] || { log ERR "Не удалось определить unit SSH."; return 1; }
 
   run_cmd systemctl daemon-reload || return 1
+  ensure_sshd_runtime_dir || return 1
 
   if ssh_is_socket_activated; then
     run_cmd systemctl restart ssh.socket || return 1
@@ -529,7 +542,7 @@ add_public_key_to_user() {
   else
     home="$(getent passwd "$username" | cut -d: -f6)"
     [[ -n "$home" ]] || { log ERR "Не удалось определить home для $username"; return 1; }
-    owner="${username}:${username}"
+    owner="${username}:$(id -gn "$username")"
   fi
   ssh_dir="$home/.ssh"
   auth_file="$ssh_dir/authorized_keys"
@@ -550,6 +563,64 @@ add_public_key_to_user() {
 
   track_key_for_user "$username" "$pubkey"
   log OK "Ключ добавлен пользователю ${username}."
+}
+
+ensure_root_key_login_allowed() {
+  local current_root_login existing_config new_config backup_config had_managed_file=0
+  current_root_login="$(get_effective_ssh permitrootlogin 2>/dev/null || true)"
+  [[ -n "$current_root_login" ]] || current_root_login="yes"
+  case "$current_root_login" in
+    yes|prohibit-password|without-password) log INFO "Root SSH-вход по ключу уже разрешён текущим режимом: ${current_root_login}."; return 0 ;;
+    no) log WARN "У root был запрещён SSH-вход. После добавления ключа включаю режим root только по ключу." ;;
+    forced-commands-only) log WARN "PermitRootLogin forced-commands-only. Автоматически не меняю этот специальный режим."; return 0 ;;
+    *) log WARN "Текущий PermitRootLogin определить точно не удалось: ${current_root_login}. Автоматически не меняю режим root."; return 0 ;;
+  esac
+  if (( DRY_RUN )); then
+    log INFO "[dry-run] set PermitRootLogin prohibit-password in $MANAGED_SSH_FILE"
+    return 0
+  fi
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  if [[ -f "$MANAGED_SSH_FILE" ]]; then
+    had_managed_file=1
+    backup_config="$(cat "$MANAGED_SSH_FILE")"
+    existing_config="$backup_config"
+    if grep -q '^[[:space:]]*PermitRootLogin[[:space:]]' "$MANAGED_SSH_FILE"; then
+      new_config="$(printf '%s\n' "$existing_config" | sed -E 's/^[[:space:]]*PermitRootLogin[[:space:]]+.*/PermitRootLogin prohibit-password/')"
+    else
+      new_config="$existing_config"
+      [[ -n "$new_config" ]] && new_config+=$'\n'
+      new_config+="PermitRootLogin prohibit-password"
+    fi
+    if grep -q '^[[:space:]]*PubkeyAuthentication[[:space:]]' <<<"$new_config"; then
+      new_config="$(printf '%s\n' "$new_config" | sed -E 's/^[[:space:]]*PubkeyAuthentication[[:space:]]+.*/PubkeyAuthentication yes/')"
+    else
+      [[ -n "$new_config" ]] && new_config+=$'\n'
+      new_config+="PubkeyAuthentication yes"
+    fi
+  else
+    new_config=$(cat <<EOF2
+# Управляется ${APP_NAME}
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+EOF2
+)
+  fi
+  printf '%s\n' "$new_config" >"$MANAGED_SSH_FILE"
+  chmod 0644 "$MANAGED_SSH_FILE"
+  check_sshd_include_order_warning
+  ensure_sshd_runtime_dir || return 1
+  if ! sshd -t >>"$LOG_FILE" 2>&1; then
+    log ERR "После разрешения root-входа по ключу проверка sshd -t не прошла. Возвращаю прежний SSH drop-in."
+    if (( had_managed_file )); then
+      printf '%s\n' "$backup_config" >"$MANAGED_SSH_FILE"
+      chmod 0644 "$MANAGED_SSH_FILE"
+    else
+      rm -f "$MANAGED_SSH_FILE"
+    fi
+    return 1
+  fi
+  restart_ssh || return 1
+  log OK "Для root включён SSH-вход только по ключу: PermitRootLogin prohibit-password."
 }
 
 show_windows_key_help() {
@@ -679,64 +750,45 @@ self_test() {
 install_or_update_recommended() {
   local extra="$1"
   local packages=("${RECOMMENDED_PACKAGES[@]}")
-  local pkg
   local missing=()
-
+  local pkg
   if [[ -n "$extra" ]]; then
     local extra_arr=()
     read -ra extra_arr <<<"$extra"
     packages+=("${extra_arr[@]}")
   fi
-
-  if (( ${#packages[@]} == 0 )); then
-    log WARN "Список пакетов пуст — устанавливать нечего."
-    return 0
-  fi
-
   log INFO "Будут установлены/обновлены пакеты: ${packages[*]}"
-
   repair_apt_dpkg_state || return 1
   run_cmd apt-get update || return 1
   repair_apt_dpkg_state || return 1
-
   if ! run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}"; then
-    log ERR "apt-get install завершился с ошибкой. Пробую восстановить dpkg/apt и повторить установку один раз."
+    log WARN "apt-get install завершился ошибкой. Повторяю восстановление dpkg/apt и пробую установку ещё раз."
     repair_apt_dpkg_state || return 1
-    run_cmd apt-get update || return 1
-    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}" || {
-      log ERR "Повторная установка рекомендуемых пакетов тоже завершилась ошибкой. Подробности смотри в логе: ${LOG_FILE}"
-      return 1
-    }
+    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -- "${packages[@]}" || return 1
   fi
-
-  if (( DRY_RUN )); then
-    log OK "[dry-run] Рекомендуемые пакеты обработаны."
-    return 0
-  fi
-
   for pkg in "${packages[@]}"; do
     if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
       missing+=("$pkg")
     fi
   done
-
   if (( ${#missing[@]} > 0 )); then
-    log ERR "apt-get завершился, но эти пакеты не найдены как установленные: ${missing[*]}"
-    log ERR "Подробности смотри в логе: ${LOG_FILE}"
+    log ERR "Не установлены пакеты: ${missing[*]}"
     return 1
   fi
-
   echo
-  echo "Рекомендуемые программы установлены или уже были установлены:"
+  echo "Рекомендуемые программы:"
   echo "- mc — файловый менеджер"
+  echo "- htop — просмотр нагрузки"
+  echo "- curl / wget — загрузка и проверка URL"
+  echo "- unzip — распаковка zip"
+  echo "- nano — простой редактор"
   echo "- jq — работа с JSON"
   echo "- git — работа с репозиториями"
   echo "- mtr-tiny — диагностика сети"
   echo "- bash-completion — автодополнение команд"
   echo "- ncdu — просмотр занятого места"
-  log OK "Рекомендуемые пакеты проверены и установлены."
+  log OK "Рекомендуемые пакеты установлены и проверены."
 }
-
 updates_menu() {
   while true; do
     clear_screen
@@ -757,8 +809,8 @@ updates_menu() {
     read -r -p "> " choice </dev/tty
     case "$choice" in
       1) run_cmd apt-get update; show_update_summary "apt update" ;;
-      2) run_cmd apt-get update && DEBIAN_FRONTEND=noninteractive run_cmd apt-get upgrade -y; show_update_summary "apt upgrade -y" ;;
-      3) run_cmd apt-get update && DEBIAN_FRONTEND=noninteractive run_cmd apt-get full-upgrade -y; show_update_summary "apt full-upgrade -y" ;;
+      2) run_cmd apt-get update && run_cmd env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y; show_update_summary "apt upgrade -y" ;;
+      3) run_cmd apt-get update && run_cmd env DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y; show_update_summary "apt full-upgrade -y" ;;
       4) run_cmd apt-get autoremove --purge -y && run_cmd apt-get autoclean -y; pause ;;
       5)
         echo
@@ -766,9 +818,7 @@ updates_menu() {
         echo "- mc, htop, curl, wget, unzip, nano"
         echo "- jq, git, mtr-tiny, bash-completion, ncdu"
         read -r -p "Дополнительные пакеты через пробел (или Enter): " extra </dev/tty
-        if ! install_or_update_recommended "$extra"; then
-          log ERR "Рекомендуемые пакеты не установлены. Подробности смотри в логе: ${LOG_FILE}"
-        fi
+        install_or_update_recommended "$extra"
         pause
         ;;
       6)
@@ -780,7 +830,7 @@ updates_menu() {
           echo "- Для серверов чаще предпочтительнее LTS-релизы"
           echo "- Перед началом желательно иметь резервную копию"
           if confirm "Продолжить к do-release-upgrade?"; then
-            run_cmd apt-get update && DEBIAN_FRONTEND=noninteractive run_cmd apt-get full-upgrade -y
+            run_cmd apt-get update && run_cmd env DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y
             run_cmd do-release-upgrade
           fi
         fi
@@ -963,7 +1013,10 @@ add_key_interactive() {
     1)
       pubkey="$(prompt_nonempty 'Вставь строку публичного SSH-ключа (.pub): ')"
       validate_pubkey_strict "$pubkey" || { log ERR "Некорректный публичный SSH-ключ."; pause; return 1; }
-      add_public_key_to_user "$username" "$pubkey"
+      add_public_key_to_user "$username" "$pubkey" || { pause; return 1; }
+      if [[ "$username" == "root" ]]; then
+        ensure_root_key_login_allowed || { pause; return 1; }
+      fi
       ;;
     2)
       src="/root/.ssh/authorized_keys"
@@ -1153,6 +1206,7 @@ EOF2
 
   check_sshd_include_order_warning
 
+  ensure_sshd_runtime_dir || { pause; return 1; }
   if ! sshd -t >>"$LOG_FILE" 2>&1; then
     log ERR "sshd -t не прошёл. Конфиг содержит ошибки. Отменяю изменения."
     if (( had_managed_file )); then
@@ -1351,6 +1405,7 @@ EOF2
 
   check_sshd_include_order_warning
 
+  ensure_sshd_runtime_dir || { pause; return 1; }
   if ! sshd -t >>"$LOG_FILE" 2>&1; then
     log ERR "sshd -t не прошёл. Конфиг содержит ошибки. Отменяю изменения."
     rm -f "$MANAGED_SSH_FILE" "$MANAGED_SSH_SOCKET_FILE"
@@ -1380,14 +1435,14 @@ rollback_ssh() {
   fi
   rm -f "$MANAGED_SSH_FILE" "$MANAGED_SSH_SOCKET_FILE"
   rmdir "$MANAGED_SSH_SOCKET_DIR" 2>/dev/null || true
-  sshd -t >>"$LOG_FILE" 2>&1 || { log ERR "После удаления SSH drop-in проверка sshd -t не прошла."; return 1; }
+  ensure_sshd_runtime_dir || return 1
+  sshd -t >>"$LOG_FILE" 2>&1 || { log ERR "После удаления SSH drop-in проверка sshd -t не прошла. Проверь системные SSH-конфиги вне LightVPS."; return 1; }
   restart_ssh
 }
-
 install_or_enable_ufw() {
   if ! command -v ufw >/dev/null 2>&1; then
     run_cmd apt-get update || return 1
-    DEBIAN_FRONTEND=noninteractive run_cmd apt-get install -y ufw || return 1
+    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y ufw || return 1
   fi
 
   local port
@@ -1445,7 +1500,7 @@ install_fail2ban_interactive() {
   local backend logpath ssh_port jail_file
   ssh_port="$(get_ssh_firewall_port)"
   run_cmd apt-get update || return 1
-  DEBIAN_FRONTEND=noninteractive run_cmd apt-get install -y fail2ban || return 1
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban || return 1
   if [[ -f /var/log/auth.log ]]; then
     backend="auto"
     logpath="/var/log/auth.log"
@@ -1483,7 +1538,7 @@ install_fail2ban_interactive() {
 remove_fail2ban_interactive() {
   if confirm "Удалить fail2ban полностью?"; then
     run_cmd systemctl disable --now fail2ban || true
-    DEBIAN_FRONTEND=noninteractive run_cmd apt-get purge -y fail2ban || true
+    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get purge -y fail2ban || true
     run_cmd apt-get autoremove --purge -y || true
     log OK "Fail2Ban удалён."
   fi
@@ -1516,7 +1571,7 @@ firewall_menu() {
       4) toggle_icmp accept && log OK "ICMP ping включён.";  pause ;;
       5) install_fail2ban_interactive; pause ;;
       6) remove_fail2ban_interactive; pause ;;
-      7) run_cmd ufw disable; pause ;;
+      7) disable_ufw_if_installed; pause ;;
       0) return 0 ;;
       *) echo "Неверный пункт."; pause ;;
     esac
@@ -1803,9 +1858,9 @@ install_docker_interactive() {
   esac
   [[ -n "$codename" ]] || { log ERR "Не удалось определить codename."; pause; return 1; }
 
-  DEBIAN_FRONTEND=noninteractive run_cmd apt-get remove -y docker docker-engine docker.io containerd runc docker-compose docker-compose-v2 docker-doc podman-docker || true
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get remove -y docker docker-engine docker.io containerd runc docker-compose docker-compose-v2 docker-doc podman-docker || true
   run_cmd apt-get update || return 1
-  DEBIAN_FRONTEND=noninteractive run_cmd apt-get install -y ca-certificates curl gnupg || return 1
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg || return 1
 
   keyring="/etc/apt/keyrings/docker.gpg"
   repo_url="https://download.docker.com/linux/${id}"
@@ -1822,7 +1877,7 @@ install_docker_interactive() {
     echo "deb [arch=${arch} signed-by=${keyring}] ${repo_url} ${codename} stable" >/etc/apt/sources.list.d/docker.list
   fi
   run_cmd apt-get update || return 1
-  DEBIAN_FRONTEND=noninteractive run_cmd apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
   run_cmd systemctl enable --now docker || true
   echo
   echo "Важно: опубликованные порты Docker могут обходить правила UFW."
@@ -1882,7 +1937,7 @@ configure_unattended_interactive() {
   case "$choice" in
     1|2)
       run_cmd apt-get update || return 1
-      DEBIAN_FRONTEND=noninteractive run_cmd apt-get install -y unattended-upgrades || return 1
+      run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades || return 1
       if (( DRY_RUN )); then
         log INFO "[dry-run] write $MANAGED_AUTO_FILE and $MANAGED_UNATTENDED_FILE"
       else
@@ -1963,7 +2018,7 @@ rollback_menu() {
         log OK "IPv6-настройки откатаны."
         pause
         ;;
-      5) run_cmd ufw disable; pause ;;
+      5) disable_ufw_if_installed; pause ;;
       6) remove_fail2ban_interactive ;;
       7)
         if (( DRY_RUN )); then log INFO "[dry-run] rm -rf $STATE_DIR"; else rm -rf "$STATE_DIR"; fi
@@ -1983,8 +2038,8 @@ rollback_menu() {
           rm -f "$MANAGED_IPV6_FILE" "$MANAGED_UNATTENDED_FILE" "$MANAGED_AUTO_FILE"
           sysctl --system >>"$LOG_FILE" 2>&1 || true
         fi
-        run_cmd ufw disable || true
-        log OK "Полный откат управляемых настроек выполнен."
+        disable_ufw_if_installed || true
+        log INFO "Полный откат управляемых настроек выполнен."
         pause
         ;;
       0) return 0 ;;
@@ -2062,7 +2117,7 @@ quick_start_menu() {
 
   if confirm "Обновить систему сейчас?"; then
     run_cmd apt-get update || { log ERR "Ошибка на этапе: Обновление системы. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
-    DEBIAN_FRONTEND=noninteractive run_cmd apt-get upgrade -y || { log ERR "Ошибка на этапе: Обновление системы. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
+    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y || { log ERR "Ошибка на этапе: Обновление системы. Все предыдущие шаги мастера выполнены без ошибок."; pause; return 1; }
   fi
 
   if confirm "Установить рекомендуемые пакеты?"; then
@@ -2187,18 +2242,15 @@ main() {
   parse_args "$@"
   ensure_root
   load_os_release
-  if (( SELF_TEST )); then
-    NON_INTERACTIVE=1
-    prepare_runtime
-    check_os_supported
-    self_test
-    return $?
-  fi
   ensure_tty
   prepare_runtime
   check_os_supported
+  if (( SELF_TEST )); then
+    self_test
+    return $?
+  fi
   main_menu
-  log INFO "Работа скрипта завершена."
+  log OK "Работа завершена."
 }
 
 main "$@"
