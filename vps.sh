@@ -25,7 +25,7 @@ LOG_FILE="${LOG_DIR}/${RUN_ID}.log"
 DRY_RUN=0
 SELF_TEST=0
 NON_INTERACTIVE=0
-SCRIPT_PATCH_VERSION="ssh-apt-root-fix-v4"
+SCRIPT_PATCH_VERSION="ssh-effective-auth-fix-v5"
 
 RECOMMENDED_PACKAGES=(mc htop curl wget unzip nano jq git mtr-tiny ca-certificates gnupg bash-completion ncdu)
 
@@ -263,6 +263,57 @@ format_root_login_mode() {
     *) printf '%s
 ' "$mode" ;;
   esac
+}
+
+upsert_ssh_directive() {
+  local file="$1" key="$2" value="$3"
+  if grep -q "^[[:space:]]*${key}[[:space:]]" "$file" 2>/dev/null; then
+    sed -i -E "s|^[[:space:]]*${key}[[:space:]].*|${key} ${value}|" "$file"
+  else
+    printf '%s\n' "${key} ${value}" >>"$file"
+  fi
+}
+
+remove_ssh_directive() {
+  local file="$1" key="$2"
+  [[ -f "$file" ]] || return 0
+  sed -i -E "/^[[:space:]]*${key}[[:space:]]/d" "$file"
+}
+
+verify_effective_ssh_auth() {
+  local expected_pass_auth="$1" expected_root_login="${2:-}" actual_pass_auth actual_pubkey actual_kbd actual_root_login
+
+  actual_pass_auth="$(get_effective_ssh passwordauthentication 2>/dev/null || true)"
+  actual_pubkey="$(get_effective_ssh pubkeyauthentication 2>/dev/null || true)"
+  actual_kbd="$(get_effective_ssh kbdinteractiveauthentication 2>/dev/null || true)"
+  actual_root_login="$(get_effective_ssh permitrootlogin 2>/dev/null || true)"
+
+  if [[ -n "$expected_pass_auth" && "$actual_pass_auth" != "$expected_pass_auth" ]]; then
+    log ERR "SSH-настройка не применилась: ожидалось PasswordAuthentication ${expected_pass_auth}, фактически ${actual_pass_auth:-неизвестно}."
+    return 1
+  fi
+
+  if [[ "$actual_pubkey" != "yes" ]]; then
+    log ERR "SSH-настройка не применилась: ожидалось PubkeyAuthentication yes, фактически ${actual_pubkey:-неизвестно}."
+    return 1
+  fi
+
+  if [[ -n "$expected_pass_auth" && "$actual_kbd" != "no" ]]; then
+    log ERR "SSH-настройка не применилась: ожидалось KbdInteractiveAuthentication no, фактически ${actual_kbd:-неизвестно}."
+    return 1
+  fi
+
+  if [[ -n "$expected_root_login" ]]; then
+    case "$expected_root_login:$actual_root_login" in
+      prohibit-password:prohibit-password|prohibit-password:without-password|no:no|yes:yes) ;;
+      *)
+        log ERR "SSH-настройка не применилась: ожидалось PermitRootLogin ${expected_root_login}, фактически ${actual_root_login:-неизвестно}."
+        return 1
+        ;;
+    esac
+  fi
+
+  return 0
 }
 
 ssh_control_unit() {
@@ -570,7 +621,8 @@ ensure_root_key_login_allowed() {
   current_root_login="$(get_effective_ssh permitrootlogin 2>/dev/null || true)"
   [[ -n "$current_root_login" ]] || current_root_login="yes"
   case "$current_root_login" in
-    yes|prohibit-password|without-password) log INFO "Root SSH-вход по ключу уже разрешён текущим режимом: ${current_root_login}."; return 0 ;;
+    prohibit-password|without-password) log INFO "Root SSH-вход по ключу уже разрешён текущим режимом: ${current_root_login}."; return 0 ;;
+    yes) log INFO "Root SSH-вход сейчас разрешён режимом yes. Ужесточаю до входа root только по ключу." ;;
     no) log WARN "У root был запрещён SSH-вход. После добавления ключа включаю режим root только по ключу." ;;
     forced-commands-only) log WARN "PermitRootLogin forced-commands-only. Автоматически не меняю этот специальный режим."; return 0 ;;
     *) log WARN "Текущий PermitRootLogin определить точно не удалось: ${current_root_login}. Автоматически не меняю режим root."; return 0 ;;
@@ -620,6 +672,7 @@ EOF2
     return 1
   fi
   restart_ssh || return 1
+  verify_effective_ssh_auth "" "prohibit-password" || return 1
   log OK "Для root включён SSH-вход только по ключу: PermitRootLogin prohibit-password."
 }
 
@@ -1262,9 +1315,10 @@ manage_users_menu() {
 
 configure_ssh_interactive() {
   clear_screen
-  local current_port old_ufw_ssh_port port pass_auth_choice pass_auth
+  local current_port old_ufw_ssh_port port pass_auth_choice pass_auth current_root_login root_login_hardening=""
   current_port="$(get_display_ssh_port)"
   old_ufw_ssh_port="$(get_ssh_firewall_port)"
+  current_root_login="$(get_effective_ssh permitrootlogin 2>/dev/null || true)"
 
   echo "===== SSH и доступ ====="
   echo "Этот раздел меняет порт SSH и вход по паролю."
@@ -1300,6 +1354,12 @@ configure_ssh_interactive() {
       pause
       return 1
     fi
+    case "$current_root_login" in
+      yes|prohibit-password|without-password|"") root_login_hardening="prohibit-password" ;;
+      no) root_login_hardening="no" ;;
+      forced-commands-only) root_login_hardening="" ;;
+      *) root_login_hardening="" ;;
+    esac
   fi
 
   if (( DRY_RUN )); then
@@ -1401,6 +1461,11 @@ UsePAM yes
 EOF2
     fi
   fi
+
+  if [[ -n "$root_login_hardening" ]]; then
+    upsert_ssh_directive "$MANAGED_SSH_FILE" "PermitRootLogin" "$root_login_hardening"
+  fi
+
   chmod 0644 "$MANAGED_SSH_FILE"
 
   check_sshd_include_order_warning
@@ -1415,6 +1480,7 @@ EOF2
   fi
 
   restart_ssh || { pause; return 1; }
+  verify_effective_ssh_auth "$pass_auth" "$root_login_hardening" || { pause; return 1; }
 
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
     run_cmd ufw allow "$(get_ssh_firewall_port)/tcp" || true
@@ -1424,7 +1490,11 @@ EOF2
     fi
   fi
 
-  log OK "SSH-настройки применены. Порт: ${port}. Парольный вход: ${pass_auth}."
+  if [[ -n "$root_login_hardening" ]]; then
+    log OK "SSH-настройки применены. Порт: ${port}. Парольный вход: ${pass_auth}. Root SSH: ${root_login_hardening}."
+  else
+    log OK "SSH-настройки применены. Порт: ${port}. Парольный вход: ${pass_auth}."
+  fi
   pause
 }
 
