@@ -39,23 +39,6 @@ chmod +x /root/vps.sh && \
 /root/vps.sh
 ```
 
-Самопроверка:
-
-```bash
-bash vps.sh --self-test
-```
-
-Безопасный пробный запуск без применения изменений:
-
-```bash
-bash vps.sh --dry-run
-```
-
-Обычный запуск:
-
-```bash
-bash vps.sh
-```
 
 ## Важный совет перед применением SSH-настроек
 
